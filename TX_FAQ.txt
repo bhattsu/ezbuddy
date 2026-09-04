@@ -1,0 +1,420 @@
+﻿FILING AND RESIDENCY
+
+Q: Who can file for divorce in Texas?
+A: Either spouse may file. At filing, either petitioner or respondent must have been a Texas domiciliary for the preceding six months and a resident of the filing county for the preceding 90 days, subject to the military and nonresident-spouse rules below.
+Authority: Tex. Fam. Code 6.301; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: How long must I live in Texas before filing?
+A: The usual requirement is six months of Texas domicile immediately before filing. Domicile means Texas is the person's fixed home, not merely a temporary presence.
+Authority: Tex. Fam. Code 6.301; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: How long must I live in the county before filing?
+A: The usual requirement is residence in the filing county for the preceding 90 days. The same qualifying spouse must satisfy both requirements: either the petitioner or respondent must have been both a Texas domiciliary for six months and a resident of that county for 90 days.
+Authority: Tex. Fam. Code 6.301; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Can I file where my spouse lives?
+A: Yes, if that spouse has been a Texas domiciliary for six months and a resident of that county for 90 days. A nonresident spouse may file in the Texas domiciliary spouse's county after the Texas spouse has been domiciled here for at least six months.
+Authority: Tex. Fam. Code 6.301-6.302; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: What if my spouse lives outside Texas?
+A: Texas can dissolve the marriage if the residency rule is met and valid notice is given, but personal jurisdiction may limit orders concerning the nonresident spouse, property, support, or children. Texas may have personal jurisdiction if Texas was the spouses' last marital residence and suit is filed within two years after it ended, or another constitutional basis exists.
+Authority: Tex. Fam. Code 6.305, 6.308; Tex. R. Civ. P. 108; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: What if my spouse lives outside the United States?
+A: A Texas divorce may still be possible, but service must comply with Rule 108a, any applicable treaty such as the Hague Service Convention, and the foreign country's law. Personal jurisdiction and international child-custody issues require separate review.
+Authority: Tex. Fam. Code 6.302, 6.305, 6.308; Tex. R. Civ. P. 108a; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: Does military residence count?
+A: Yes in specified circumstances. A Texas domiciliary's absence on armed-forces or other public service, and an accompanying spouse's absence, counts as Texas and county residence. A person not previously resident who is stationed at Texas installations for six months and in a Texas county for 90 days, or an accompanying spouse, is deemed domiciled and resident for filing.
+Authority: Tex. Fam. Code 6.303-6.304; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Can a nonresident petitioner file in Texas?
+A: Yes, if the other spouse has been a Texas domiciliary for at least six months; file in the county where that domiciliary spouse resides when the petition is filed.
+Authority: Tex. Fam. Code 6.302; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+GROUNDS
+
+Q: Does Texas allow no-fault divorce?
+A: Yes. A court may grant divorce for insupportability without regard to fault.
+Authority: Tex. Fam. Code 6.001; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: What does unsupportability mean?
+A: Discord or conflict of personalities has destroyed the legitimate ends of the marriage and prevents any reasonable expectation of reconciliation.
+Authority: Tex. Fam. Code 6.001, 6.402; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Can adultery affect a Texas divorce?
+A: Yes. Adultery is a statutory fault ground, and proven marital fault may be considered in a just-and-right property division. It does not automatically award all property or decide conservatorship.
+Authority: Tex. Fam. Code 6.003, 7.001; Murff v. Murff, 615 S.W.2d 696 (Tex. 1981); Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Texas Legislature, Family Code Chapter 7, Award of Marital Property; Murff v. Murff, 615 S.W.2d 696 (Tex. 1981)
+
+Q: Do I have to prove fault?
+A: No if relying on insupportability. A party seeking relief based on adultery, cruelty, abandonment, felony conviction, living apart, or mental-hospital confinement must plead the applicable ground and prove it.
+Authority: Tex. Fam. Code 6.001-6.007; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+UNCONTESTED DIVORCE
+
+Q: What makes a Texas divorce uncontested?
+A: The spouses agree on every material issue and will present a complete decree the court can approve, including property and debts and, when applicable, conservatorship, possession, support, and insurance. Agreement that the marriage should end is not enough.
+Authority: Tex. Fam. Code 7.006, 153.007, 154.124; Texas Legislature, Family Code Chapter 7, Award of Marital Property; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access; Texas Legislature, Family Code Chapter 154, Child Support
+
+Q: Does my spouse have to sign the petition?
+A: No. The petitioner signs and files the petition. The respondent instead receives formal service, signs a valid post-filing waiver, or voluntarily answers.
+Authority: Tex. Fam. Code 6.4035, 6.408; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Does my spouse have to sign the final decree?
+A: For an agreed-divorce workflow, yes: obtain the respondent's approval signature on the completed decree, and obtain any other signatures the form or local court requires. A respondent's signature is not required for a legally sufficient default judgment, but default proof and safeguards apply.
+Authority: Tex. Fam. Code 7.006; Texas Legislature, Family Code Chapter 7, Award of Marital Property; TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: Can we still have an uncontested divorce if an answer was filed?
+A: Yes. Filing an answer prevents a no-answer default, but the case can finish by agreement if all issues are resolved and the respondent signs the completed decree. If the respondent will not approve it, the case is contested.
+Authority: TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: What if we agree on divorce but not property?
+A: The case is contested because property and debt division remains unresolved. Settlement, mediation, or a contested hearing is needed.
+Authority: Tex. Fam. Code 7.001, 7.006; Texas Legislature, Family Code Chapter 7, Award of Marital Property
+
+Q: What if we agree on property but not custody?
+A: The case is contested because conservatorship, possession, geographic restriction, support, or medical and dental support remains unresolved.
+Authority: Tex. Fam. Code chs. 153-154; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access; Texas Legislature, Family Code Chapter 154, Child Support
+
+Q: Can the judge reject our agreement?
+A: Yes. A property agreement must be found just and right, and a child-related agreement must satisfy the child's best interest. The court may request revisions or set a contested hearing.
+Authority: Tex. Fam. Code 7.006, 153.007, 154.124; Texas Legislature, Family Code Chapter 7, Award of Marital Property; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access; Texas Legislature, Family Code Chapter 154, Child Support
+
+DEFAULT DIVORCE
+
+Q: When is a spouse considered in default?
+A: A no-answer default becomes available only after valid service, expiration of the Rule 99 answer deadline, no answer or appearance, and satisfaction of Rule 107's return-on-file period. The court must still receive evidence in a divorce.
+Authority: Tex. R. Civ. P. 99, 107(h), 239, 243; Tex. Fam. Code 6.701; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: How long does a spouse have to answer?
+A: In an ordinary district or county-court divorce citation, the answer is due by 10:00 a.m. on the Monday next after 20 days expire following the service date. If that Monday is a legal holiday, Rule 4 can extend the deadline.
+Authority: Tex. R. Civ. P. 4, 99; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: Can I get a default divorce immediately after service?
+A: No. The answer deadline must expire, proof of service must satisfy Rule 107(h), the divorce's 60-day waiting rule must be met unless a statutory exception applies, and local setting and proof requirements must be completed.
+Authority: Tex. R. Civ. P. 99, 107(h), 239; Tex. Fam. Code 6.702; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: What is the Rule 107 waiting requirement?
+A: Proof of service must be on file with the clerk for 10 days before default judgment, excluding both the day it was filed and the day judgment is taken. This is separate from the answer deadline and 60-day divorce wait.
+Authority: Tex. R. Civ. P. 107(h); Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: Does the 60-day divorce waiting period still apply to a default?
+A: Yes, unless the court makes one of the family-violence findings in section 6.702(c). Default does not shorten the statutory divorce waiting period.
+Authority: Tex. Fam. Code 6.702; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: What happens if my spouse files an answer before the default hearing?
+A: A no-answer default is no longer available, even if the answer was late. The case may finish by agreement if the decree is approved, or must proceed on a contested track with proper notice.
+Authority: Tex. R. Civ. P. 239; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: Do I automatically receive everything requested if my spouse defaults?
+A: No. A divorce petition may not be taken as confessed. The petitioner must prove the material allegations, and requested property and child orders must be lawful, supported by evidence, and within the pleadings.
+Authority: Tex. Fam. Code 6.701; Tex. R. Civ. P. 243; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: What extra default documents are commonly required?
+A: Common statewide items include proof of service, a certificate of last known mailing and email addresses, and a military-status affidavit or declaration. Courts may require additional local forms, evidence, or a prove-up affidavit.
+Authority: Tex. R. Civ. P. 239a; 50 U.S.C. 3931; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; United States Code, Servicemembers Civil Relief Act default protections, 50 U.S.C. 3931
+
+Q: What if the respondent is in military service?
+A: The Servicemembers Civil Relief Act restricts default judgments. The court requires a military-status affidavit; if the respondent appears to be serving, the court generally must appoint counsel before default and may have to stay the case.
+Authority: 50 U.S.C. 3931; United States Code, Servicemembers Civil Relief Act default protections, 50 U.S.C. 3931
+
+SERVICE
+
+Q: Can my spouse waive service?
+A: Yes. After filing, the spouse may file a waiver acknowledging receipt of the filed petition. It must contain a mailing address and ordinarily be sworn before a notary who is not an attorney in the case; the incarceration exception and digitized-signature rule are in section 6.4035.
+Authority: Tex. Fam. Code 6.4035; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Can a waiver be signed before filing?
+A: No. Section 6.4035 permits the dissolution waiver after the suit is filed and requires acknowledgment of a copy of the filed petition.
+Authority: Tex. Fam. Code 6.4035(a); Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Who can serve divorce papers?
+A: A sheriff, constable, other person authorized by law or written court order who is at least 18, or a Judicial Branch Certification Commission-certified process server may serve. The clerk handles registered or certified mail and publication if requested as Rule 103 provides.
+Authority: Tex. R. Civ. P. 103; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: Can I serve my spouse myself?
+A: No. A party or person interested in the outcome may not serve process in that suit.
+Authority: Tex. R. Civ. P. 103; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: Can service be made by email or social media?
+A: Only through court-authorized substituted service after the required evidence supports it. Rule 106(b)(2) lets a court order social media, email, or other technology reasonably effective to give notice; simply sending a message yourself is not valid original service.
+Authority: Tex. R. Civ. P. 106(b); Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: What happens if I cannot find my spouse?
+A: Document a diligent search and attempt available ordinary or court-ordered substituted service. Depending on the facts, request alternative service, publication, or in a qualifying no-child case courthouse posting; publication can trigger ad-litem and evidence requirements.
+Authority: Tex. R. Civ. P. 106(b), 109, 109a, 244; Tex. Fam. Code 6.409; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: When can publication be used?
+A: Generally after a sworn showing that the respondent's residence is unknown or that due diligence failed under Rule 109, with the court examining diligence before judgment. Divorce notice is published once; special posting and attorney-ad-litem provisions may apply under Family Code 6.409.
+Authority: Tex. R. Civ. P. 109, 116-117, 244; Tex. Fam. Code 6.409; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: How is a spouse served in another country?
+A: Use Rule 108a and any controlling international agreement. Service must be reasonably calculated to give actual notice and cannot use a method prohibited by an applicable treaty or foreign law.
+Authority: Tex. R. Civ. P. 108a; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+WAITING PERIOD
+
+Q: Is there a 60-day waiting period?
+A: Yes. Unless section 6.702(c) applies, a court may not grant divorce before the 60th day after the suit was filed.
+Authority: Tex. Fam. Code 6.702(a); Tex. R. Civ. P. 4; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: How is the 60-day period calculated?
+A: Do not count the filing day; the next day is day one. Count calendar days. If the last day falls on Saturday, Sunday, or a legal holiday, Rule 4 ordinarily carries the deadline to the next day the clerk's office is open.
+Authority: Tex. Fam. Code 6.702; Tex. R. Civ. P. 4; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: Are there exceptions?
+A: Yes. No 60-day wait is required if the court finds the respondent was finally convicted of or received deferred adjudication for a family-violence offense against the petitioner or household member, or the petitioner has a qualifying active protective or emergency-protection order based on family violence during the marriage.
+Authority: Tex. Fam. Code 6.702(c); Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Can an uncontested case finish exactly on day 60?
+A: The statute does not prohibit a decree on the 60th day after filing. It can finish then only if the court is open, all service or waiver, proof, forms, and local setting requirements are complete, and the judge signs the decree.
+Authority: Tex. Fam. Code 6.702; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Does passing 60 days automatically make me divorced?
+A: No. The waiting period only establishes an earliest possible date. The marriage ends when the judge renders and signs the final decree as the court's judgment, subject to proper filing and any post-judgment issues.
+Authority: Tex. Fam. Code 6.702, 6.710; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+CHILDREN
+
+Q: What is conservatorship?
+A: Texas uses conservatorship for legal custody: the court allocates parental rights and duties and possession and access. A managing conservator may be a parent or another qualified person or entity.
+Authority: Tex. Fam. Code 101.016, 153.005; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access
+
+Q: What is joint managing conservatorship?
+A: Both parents share managing-conservator status and allocated rights and duties. It does not require equal or nearly equal possession, and the court may still order one joint conservator to pay child support.
+Authority: Tex. Fam. Code 153.131, 153.135, 153.138; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access
+
+Q: Who decides where the child lives?
+A: The agreed plan or court order designates the conservator with the exclusive right to determine the child's primary residence and states a geographic area or permits residence without a geographic limit.
+Authority: Tex. Fam. Code 153.133-153.134; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access
+
+Q: What is a geographic restriction?
+A: It is an order limiting the area in which the child's primary residence must be maintained, often a county and contiguous counties or another stated area. Its exact terms come from the decree and can be case-specific.
+Authority: Tex. Fam. Code 153.134(b)(1); Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access
+
+Q: How is child support calculated?
+A: Start with the obligor's monthly net resources and apply presumptive percentages for children before the court: 20 percent for one, 25 for two, 30 for three, 35 for four, 40 for five, and not less than 40 for six or more. Different low-income and multiple-household tables and deviation factors apply. Effective September 1, 2025, the guideline cap is $11,700 in monthly net resources.
+Authority: Tex. Fam. Code 154.061-154.070, 154.123, 154.125-154.129; Texas Legislature, Family Code Chapter 154, Child Support; Texas Register, OAG adjustment effective September 1, 2025, guideline cap $11,700
+
+Q: Who pays health and dental insurance?
+A: The court must order medical and dental support. It follows statutory priorities based on availability, reasonable cost, accessibility, and quality; the obligor commonly provides coverage or reimburses the obligee, but the result is fact-specific. Uninsured expenses are allocated according to circumstances.
+Authority: Tex. Fam. Code 154.008, 154.064, 154.181-154.183; Texas Legislature, Family Code Chapter 154, Child Support
+
+Q: What if there is already a custody order?
+A: Identify the court with continuing, exclusive jurisdiction. The existing SAPCR may need transfer and consolidation with the divorce; another Texas court generally cannot make competing orders outside the transfer statutes.
+Authority: Tex. Fam. Code 6.407, 155.001; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Texas Legislature, Family Code Chapter 155, Continuing Exclusive Jurisdiction and Transfer
+
+Q: What if the child recently moved to Texas?
+A: Texas may not yet be the child's home state. Home state generally requires six consecutive months immediately before the case, with special rules for children younger than six months, temporary absence, prior home state, significant connections, and emergencies.
+Authority: Tex. Fam. Code 152.102(7), 152.201-152.204; Texas Legislature, Family Code Chapter 152, UCCJEA
+
+Q: What if a spouse is pregnant?
+A: Disclose the pregnancy and do not use a routine finalization workflow. Texas courts generally wait until after birth so parentage, conservatorship, and support can be addressed; if the husband is not the genetic father or the marriage is same-sex, specialized parentage advice is important.
+Authority: Tex. Fam. Code 6.406, 160.204; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; TexasLawHelp, Divorce When a Spouse is Pregnant
+
+Q: Does joint managing conservatorship mean neither parent is primary?
+A: No. A joint order normally designates one conservator with the exclusive right to determine primary residence, while allocating other rights jointly, independently, or exclusively.
+Authority: Tex. Fam. Code 153.134; Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access
+
+PROPERTY
+
+Q: Is Texas a community-property state?
+A: Yes. Property other than separate property acquired by either spouse during marriage is community property, and property possessed at divorce is presumed community unless rebutted by clear and convincing evidence.
+Authority: Tex. Fam. Code 3.002-3.003; Texas Legislature, Family Code Chapter 3, Marital Property Rights and Liabilities
+
+Q: Does community property mean 50/50?
+A: No. The court divides the marital estate in a manner it finds just and right, which can be unequal. Separate property is confirmed, not divided as community property.
+Authority: Tex. Fam. Code 7.001; Texas Legislature, Family Code Chapter 7, Award of Marital Property
+
+Q: What is separate property?
+A: Generally property owned or claimed before marriage, property acquired during marriage by gift, devise, or descent, and personal-injury recovery except recovery for lost earning capacity during marriage. Separate character must usually be traced and proved by clear and convincing evidence.
+Authority: Tex. Fam. Code 3.001, 3.003; Texas Legislature, Family Code Chapter 3, Marital Property Rights and Liabilities
+
+Q: What happens to a house?
+A: The decree can award it to one spouse, order sale and division of proceeds, or approve another lawful agreement. Address title, the full legal description, liens, payment responsibility, transfer documents, sale terms, and refinancing; an award does not itself release a borrower from the lender.
+Authority: Tex. Fam. Code 7.001; Texas Legislature, Family Code Chapter 7, Award of Marital Property; TexasLawHelp, Divorce and Real Estate
+
+Q: How are vehicles divided?
+A: The decree should identify each vehicle and award ownership and associated debt, then require title-transfer documents as needed. The lender is not bound to remove a borrower merely because the decree assigns payment responsibility.
+Authority: Tex. Fam. Code 7.001; Texas Legislature, Family Code Chapter 7, Award of Marital Property
+
+Q: How are retirement accounts divided?
+A: The decree must determine both spouses' rights in pensions, retirement plans, IRAs, and similar benefits. Employer plans often require a separate qualified domestic relations order or plan-specific order; military and government benefits have special rules.
+Authority: Tex. Fam. Code 7.003, 9.101-9.105; Texas Legislature, Family Code Chapter 7, Award of Marital Property; Texas Legislature, Family Code Chapter 9, Post-Decree Proceedings and QDROs
+
+Q: Can the court divide property located outside Texas?
+A: Section 7.002 directs division of specified quasi-community real and personal property wherever situated, but jurisdiction, foreign-state title law, and enforcement may require additional orders or proceedings. Route out-of-state real estate to counsel.
+Authority: Tex. Fam. Code 7.002; Texas Legislature, Family Code Chapter 7, Award of Marital Property
+
+Q: Does a divorce decree remove my name from a mortgage?
+A: No. A decree allocates responsibility between spouses but does not rewrite the lender's contract. Removal normally requires refinance, payoff, or the lender's written release; a court cannot force a lender to approve refinance.
+Authority: TexasLawHelp, Divorce and Real Estate
+
+Q: Does the name on title alone decide whether property is community?
+A: No. Character generally turns on when and how property was acquired, and property possessed at divorce is presumed community. Title is relevant evidence but not the complete classification rule.
+Authority: Tex. Fam. Code 3.001-3.003; Texas Legislature, Family Code Chapter 3, Marital Property Rights and Liabilities
+
+COURT PROCEDURE
+
+Q: Do I need a hearing?
+A: Often a short prove-up is required, especially for default, but some courts permit an agreed or default divorce to be proved by affidavit or submitted without an appearance. The assigned judge's current procedure controls.
+Authority: Tex. R. Civ. P. 21d, 243; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal; TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: What is a prove-up?
+A: It is the final presentation of testimony or permitted written evidence establishing jurisdiction, grounds, notice or agreement, and facts supporting the decree. The judge reviews the proposed decree and signs only if legally sufficient.
+Authority: Tex. Fam. Code 6.701; Tex. R. Civ. P. 243; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+Q: Can the prove-up be remote?
+A: Possibly. Rule 21d permits electronic appearances on proper notice, subject to court control, objections, good cause, and special limits for oral testimony and jury trials. Check the assigned court's notice and local orders.
+Authority: Tex. R. Civ. P. 21d; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal
+
+Q: Can I submit the decree without appearing?
+A: Only if the assigned court accepts an affidavit or submission procedure and all required evidence and documents are filed. Some courts do; others require live or remote testimony.
+Authority: Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal; TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: Does every county use the same procedure?
+A: No. State statutes and statewide rules apply everywhere, but court assignment, standing orders, parenting courses, docket settings, prove-up method, remote appearance, and required local forms vary by county and court.
+Authority: Tex. R. Civ. P. 3a; Tex. R. Jud. Admin. 10; Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal
+
+Q: What is a standing order?
+A: A standing order is a court order that automatically governs a defined class of cases, often restricting conduct concerning children, property, records, or communications while a family case is pending. Its effective scope and start date come from the posted order.
+Authority: Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal
+
+Q: Do I need to attach the standing order to the petition?
+A: It depends on the exact county or court order and clerk procedure. Some require attachment or service with the petition; others make the order effective without an attachment. Read the current posted order rather than assuming.
+Authority: Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal
+
+Q: How do I know which family court receives the case?
+A: File with the proper district clerk or other authorized clerk for the county. Assignment may be random, rotational, specialized, or controlled by local transfer and administration rules; the clerk assigns the cause rather than the filer choosing a judge unless local law provides otherwise.
+Authority: Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal; Texas Office of Court Administration, Judicial Directory
+
+Q: Where do I find current local rules and standing orders?
+A: Use the Office of Court Administration's statewide Local Rules, Forms, and Standing Orders portal, filtering by county and then assigned court. Since January 1, 2023, district and county-court local rules, forms, and standing orders must be posted there to be effective.
+Authority: Tex. R. Civ. P. 3a; Tex. R. Jud. Admin. 10; Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal
+
+FILING
+
+Q: Do I need a lawyer?
+A: Texas permits self-representation, but legal review is strongly recommended for family violence, disputed issues, pregnancy or parentage, nonresident or international parties, military service, retirement, business interests, real estate, separate-property tracing, bankruptcy, or unusual custody facts.
+Authority: TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+
+Q: Can court costs be waived?
+A: A person unable to afford costs may file the Supreme Court-approved Statement of Inability to Afford Payment of Court Costs. The court or clerk applies Rule 145; a fee waiver is not automatic merely because requested.
+Authority: Tex. R. Civ. P. 145; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; Supreme Court of Texas approved civil forms, including Statement of Inability
+
+Q: Can I e-file my divorce?
+A: Self-represented litigants may generally e-file through an approved service provider, but paper filing options and exemptions depend on statewide e-filing rules and clerk procedure. Confirm the correct filing code, lead document, fees, and local attachments with the filing clerk.
+Authority: Tex. R. Civ. P. 21(f); Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026; Texas Judicial Branch, eFileTexas
+
+PRIVACY
+
+Q: Should Social Security and bank numbers appear in public filings?
+A: Rule 21c requires sensitive data to be redacted except where an exception applies, and Family Code forms commonly request only limited identifiers. Use the current form and never place full sensitive identifiers in a public document unless legally required.
+Authority: Tex. R. Civ. P. 21c; Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+
+AFTER DIVORCE
+
+Q: Can I change my name in the divorce?
+A: A party may request restoration to a name previously used. The court generally shall grant the request unless it states a reason for denial; the change does not erase prior liabilities or rights.
+Authority: Tex. Fam. Code 6.706; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: When can I remarry?
+A: Generally neither former spouse may marry a third party before the 31st day after the divorce decree is signed, although the court may waive that prohibition for good cause. Reconciliation and remarriage to each other are treated differently.
+Authority: Tex. Fam. Code 6.801-6.802; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+PROCEDURE
+
+Q: When is the divorce actually final?
+A: For operational purposes, treat the marriage as dissolved when the judge signs the final decree, not when papers are filed, served, agreed, or the 60 days pass. Appeal and remarriage restrictions remain separate questions.
+Authority: Tex. Fam. Code 6.702, 6.710, 6.801; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+Q: Can we use one lawyer for both spouses?
+A: A lawyer normally represents only the client who retained the lawyer; conflicts rules can prevent representing both spouses. The other spouse may obtain independent advice, and document-preparation or mediation roles must be clearly disclosed.
+Authority: Tex. Disciplinary R. Prof'l Conduct 1.06-1.07; State Bar of Texas, Texas Disciplinary Rules of Professional Conduct
+
+SAFETY
+
+Q: What if family violence is involved?
+A: Use a safety-focused workflow. Protective orders, confidential addresses, temporary orders, service planning, and the section 6.702 waiting-period exception may apply; do not route the matter through a routine joint-document or direct-contact workflow.
+Authority: Tex. Fam. Code 6.404-6.405, 6.702(c), Title 4; Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+
+QUALITY CONTROL
+
+Q: Can a clerk give legal advice?
+A: No. A clerk can provide filing information, fees, accepted methods, and court assignment, but cannot choose legal strategy, tell a party what relief to request, or confirm that forms protect that party's rights.
+Authority: Texas Office of Court Administration, Judicial Directory
+
+ALL 254 TEXAS COUNTIES
+
+The statewide answers above apply in every Texas county. Local court assignment, standing orders, parenting-course requirements, docket settings, prove-up methods, remote appearances, and local forms can differ. For each case, check the Office of Court Administration local-rules portal for the county and assigned court, then confirm the current administrative procedure with the district clerk or court coordinator.
+
+Anderson, Andrews, Angelina, Aransas, Archer, Armstrong, Atascosa, Austin, Bailey, Bandera, Bastrop, Baylor, Bee, Bell, Bexar, Blanco, Borden, Bosque, Bowie, Brazoria, Brazos, Brewster, Briscoe, Brooks, Brown, Burleson, Burnet, Caldwell, Calhoun, Callahan, Cameron, Camp, Carson, Cass, Castro, Chambers, Cherokee, Childress, Clay, Cochran, Coke, Coleman, Collin, Collingsworth, Colorado, Comal, Comanche, Concho, Cooke, Coryell, Cottle, Crane, Crockett, Crosby, Culberson, Dallam, Dallas, Dawson, Deaf Smith, Delta, Denton, DeWitt, Dickens, Dimmit, Donley, Duval, Eastland, Ector, Edwards, Ellis, El Paso, Erath, Falls, Fannin, Fayette, Fisher, Floyd, Foard, Fort Bend, Franklin, Freestone, Frio, Gaines, Galveston, Garza, Gillespie, Glasscock, Goliad, Gonzales, Gray, Grayson, Gregg, Grimes, Guadalupe, Hale, Hall, Hamilton, Hansford, Hardeman, Hardin, Harris, Harrison, Hartley, Haskell, Hays, Hemphill, Henderson, Hidalgo, Hill, Hockley, Hood, Hopkins, Houston, Howard, Hudspeth, Hunt, Hutchinson, Irion, Jack, Jackson, Jasper, Jeff Davis, Jefferson, Jim Hogg, Jim Wells, Johnson, Jones, Karnes, Kaufman, Kendall, Kenedy, Kent, Kerr, Kimble, King, Kinney, Kleberg, Knox, Lamar, Lamb, Lampasas, La Salle, Lavaca, Lee, Leon, Liberty, Limestone, Lipscomb, Live Oak, Llano, Loving, Lubbock, Lynn, McCulloch, McLennan, McMullen, Madison, Marion, Martin, Mason, Matagorda, Maverick, Medina, Menard, Midland, Milam, Mills, Mitchell, Montague, Montgomery, Moore, Morris, Motley, Nacogdoches, Navarro, Newton, Nolan, Nueces, Ochiltree, Oldham, Orange, Palo Pinto, Panola, Parker, Parmer, Pecos, Polk, Potter, Presidio, Rains, Randall, Reagan, Real, Red River, Reeves, Refugio, Roberts, Robertson, Rockwall, Runnels, Rusk, Sabine, San Augustine, San Jacinto, San Patricio, San Saba, Schleicher, Scurry, Shackelford, Shelby, Sherman, Smith, Somervell, Starr, Stephens, Sterling, Stonewall, Sutton, Swisher, Tarrant, Taylor, Terrell, Terry, Throckmorton, Titus, Tom Green, Travis, Trinity, Tyler, Upshur, Upton, Uvalde, Val Verde, Van Zandt, Victoria, Walker, Waller, Ward, Washington, Webb, Wharton, Wheeler, Wichita, Wilbarger, Willacy, Williamson, Wilson, Winkler, Wise, Wood, Yoakum, Young, Zapata, Zavala.
+
+SOURCES
+
+Texas Legislature, Family Code Chapter 6, Suit for Dissolution of Marriage
+https://tcss.legis.texas.gov/resources/FA/htm/FA.6.htm
+
+Texas Legislature, Family Code Chapter 3, Marital Property Rights and Liabilities
+https://tcss.legis.texas.gov/resources/FA/htm/FA.3.htm
+
+Texas Legislature, Family Code Chapter 7, Award of Marital Property
+https://tcss.legis.texas.gov/resources/FA/htm/FA.7.htm
+
+Texas Legislature, Family Code Chapter 153, Conservatorship, Possession, and Access
+https://tcss.legis.texas.gov/resources/FA/htm/FA.153.htm
+
+Texas Legislature, Family Code Chapter 154, Child Support
+https://tcss.legis.texas.gov/resources/FA/htm/FA.154.htm
+
+Texas Legislature, Family Code Chapter 152, UCCJEA
+https://tcss.legis.texas.gov/resources/FA/htm/FA.152.htm
+
+Texas Legislature, Family Code Chapter 155, Continuing Exclusive Jurisdiction and Transfer
+https://tcss.legis.texas.gov/resources/FA/htm/FA.155.htm
+
+Supreme Court of Texas, Texas Rules of Civil Procedure, effective July 1, 2026
+https://www.txcourts.gov/media/1462349/texas-rules-of-civil-procedure.pdf
+
+Texas Office of Court Administration, Local Rules, Forms, and Standing Orders portal
+https://topics.txcourts.gov/LocalRulesPublic/LocalRuleDocuments
+
+Texas Office of Court Administration, Judicial Directory
+https://www.txcourts.gov/judicial-directory/
+
+Texas Department of State Health Services, official 254-county number and FIPS table
+https://www.dshs.texas.gov/center-health-statistics/texas-county-numbers-public-health-regions
+
+Texas Register, OAG adjustment effective September 1, 2025, guideline cap $11,700
+https://www.sos.state.tx.us/texreg/archive/August152025/In%20Addition/In%20Addition.html
+
+United States Code, Servicemembers Civil Relief Act default protections, 50 U.S.C. 3931
+https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title50-section3931
+
+TexasLawHelp, current divorce-without-minor-children guide including agreed/default finalization
+https://texaslawhelp.org/guide/i-need-a-divorce-we-do-not-have-minor-children
+
+TexasLawHelp, Divorce and Real Estate
+https://texaslawhelp.org/article/divorce-and-real-estate
+
+TexasLawHelp, Divorce When a Spouse is Pregnant
+https://texaslawhelp.org/article/divorce-when-a-spouse-is-pregnant
+
+Texas Judicial Branch, current Rules and Standards index
+https://www.txcourts.gov/rules-forms/rules-standards.aspx
+
+Murff v. Murff, 615 S.W.2d 696 (Tex. 1981)
+https://law.justia.com/cases/texas/supreme-court/1981/b-9635-0.html
+
+Texas Legislature, Family Code Chapter 9, Post-Decree Proceedings and QDROs
+https://tcss.legis.texas.gov/resources/FA/htm/FA.9.htm
+
+Supreme Court of Texas approved civil forms, including Statement of Inability
+https://www.txcourts.gov/rules-forms/forms/
+
+Texas Judicial Branch, eFileTexas
+https://www.efiletexas.gov/
+
+State Bar of Texas, Texas Disciplinary Rules of Professional Conduct
+https://www.texasbar.com/Content/NavigationMenu/ForLawyers/GrievanceandEthics/EthicsResources/Rules/TexasDisciplinaryRulesofProfessionalConduct.pdf
+

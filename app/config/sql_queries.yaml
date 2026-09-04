@@ -1,0 +1,1231 @@
+# Shared SQL for asyncpg ($1, $2, …).
+# Load with: from app.utils.sql_queries import get_sql
+# Example: get_sql("configuration.fetch_states")
+#
+# Sections:
+#   health          - connectivity / schema checks
+#   configuration   - states, counties, jurisdictions, types, workflows, templates
+#   verification    - post-ingest counts and existence checks
+#   legal_filing    - chatbot case / template / search queries
+#   operational     - users and case lists
+#   workflow        - filing sessions, answers, submissions
+#   documents       - generated/uploaded case documents
+#   knowledge       - matter types, KB vectors, FTS / similarity
+#   conversations   - chat history and attachments
+#   integration     - API providers, payments, logs
+
+health:
+  ping: |
+    SELECT 1
+  list_schemas: |
+    SELECT nspname
+    FROM pg_namespace
+    WHERE nspname NOT LIKE 'pg_%'
+    ORDER BY 1
+  schema_exists: |
+    SELECT 1
+    FROM information_schema.schemata
+    WHERE schema_name = $1
+  table_exists: |
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = $1
+      AND table_name = $2
+    LIMIT 1
+  count_user_tables: |
+    SELECT count(1)
+    FROM information_schema.tables
+    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+  extension_available: |
+    SELECT 1
+    FROM pg_available_extensions
+    WHERE name = $1
+configuration:
+  fetch_states: |
+    SELECT
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name
+    FROM configuration.states s
+    WHERE s.is_active = TRUE
+    ORDER BY s.name
+  fetch_state_by_code: |
+    SELECT
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name,
+        s.is_active
+    FROM configuration.states s
+    WHERE s.code = $1
+    LIMIT 1
+  fetch_counties_by_state: |
+    SELECT
+        c.id   AS county_id,
+        c.code AS county_code,
+        c.name AS county_name,
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name
+    FROM configuration.counties c
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE COALESCE(c.is_active, TRUE) = TRUE
+      AND s.is_active = TRUE
+      AND ($1::text IS NULL OR s.code = $1)
+    ORDER BY s.name, c.name
+  fetch_case_types: |
+    SELECT
+        ct.id   AS case_type_id,
+        ct.code AS case_type_code,
+        ct.name AS case_type,
+        cs.id   AS case_subtype_id,
+        cs.code AS sub_case_type_code,
+        cs.name AS sub_case_type,
+        ct.description AS case_type_description,
+        cs.description AS sub_case_type_description
+    FROM configuration.case_types ct
+    INNER JOIN configuration.case_subtypes cs
+        ON cs.case_type_id = ct.id
+    WHERE COALESCE(ct.is_active, TRUE) = TRUE
+      AND COALESCE(cs.is_active, TRUE) = TRUE
+    ORDER BY ct.name, cs.name
+  fetch_jurisdictions: |
+    SELECT
+        j.id   AS jurisdiction_id,
+        j.code AS jurisdiction_code,
+        j.name AS jurisdiction_name,
+        j.jurisdiction_type,
+        c.id   AS county_id,
+        c.name AS county_name,
+        c.code AS county_code,
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name
+    FROM configuration.jurisdictions j
+    INNER JOIN configuration.counties c ON c.id = j.county_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE COALESCE(j.is_active, TRUE) = TRUE
+      AND COALESCE(c.is_active, TRUE) = TRUE
+      AND s.is_active = TRUE
+      AND ($1::text IS NULL OR s.code = $1)
+    ORDER BY s.name, c.name, j.name
+  fetch_active_workflow: |
+    SELECT
+        wd.id AS workflow_id,
+        wd.workflow_name,
+        wd.status,
+        wd.case_subtype_id,
+        wd.jurisdiction_id,
+        j.code AS jurisdiction_code,
+        ct.name AS case_type,
+        cs.name AS sub_case_type
+    FROM configuration.workflow_definitions wd
+    INNER JOIN configuration.case_subtypes cs ON cs.id = wd.case_subtype_id
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    INNER JOIN configuration.jurisdictions j ON j.id = wd.jurisdiction_id
+    WHERE wd.status = 'ACTIVE'
+      AND ct.name = $1
+      AND cs.name = $2
+      AND ($3::text IS NULL OR j.code = $3)
+    LIMIT 1
+  fetch_question_by_code: |
+    SELECT
+        q.id AS question_id,
+        q.code,
+        q.question_text,
+        q.question_type,
+        q.placeholder,
+        q.help_text,
+        q.validation_rules,
+        q.is_active
+    FROM configuration.questions q
+    WHERE q.code = $1
+    LIMIT 1
+  fetch_case_types_only: |
+    SELECT
+        ct.id   AS case_type_id,
+        ct.code AS case_type_code,
+        ct.name AS case_type,
+        ct.description AS case_type_description
+    FROM configuration.case_types ct
+    WHERE COALESCE(ct.is_active, TRUE) = TRUE
+    ORDER BY ct.name
+  fetch_case_type_by_code: |
+    SELECT
+        ct.id   AS case_type_id,
+        ct.code AS case_type_code,
+        ct.name AS case_type,
+        ct.description AS case_type_description,
+        ct.is_active
+    FROM configuration.case_types ct
+    WHERE ct.code = $1
+    LIMIT 1
+  fetch_case_subtype_by_code: |
+    SELECT
+        cs.id   AS case_subtype_id,
+        cs.code AS sub_case_type_code,
+        cs.name AS sub_case_type,
+        cs.description AS sub_case_type_description,
+        ct.id   AS case_type_id,
+        ct.code AS case_type_code,
+        ct.name AS case_type
+    FROM configuration.case_subtypes cs
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    WHERE cs.code = $1
+      AND COALESCE(cs.is_active, TRUE) = TRUE
+    LIMIT 1
+  fetch_subtypes_by_case_type: |
+    SELECT
+        cs.id   AS case_subtype_id,
+        cs.code AS sub_case_type_code,
+        cs.name AS sub_case_type,
+        cs.description AS sub_case_type_description,
+        ct.id   AS case_type_id,
+        ct.code AS case_type_code,
+        ct.name AS case_type
+    FROM configuration.case_subtypes cs
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    WHERE COALESCE(cs.is_active, TRUE) = TRUE
+      AND COALESCE(ct.is_active, TRUE) = TRUE
+      AND (ct.code = $1 OR ct.name = $1)
+    ORDER BY cs.name
+  fetch_county_by_code: |
+    SELECT
+        c.id   AS county_id,
+        c.code AS county_code,
+        c.name AS county_name,
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name
+    FROM configuration.counties c
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE c.code = $1
+      AND ($2::text IS NULL OR s.code = $2)
+      AND COALESCE(c.is_active, TRUE) = TRUE
+    LIMIT 1
+  fetch_county_by_name: |
+    SELECT
+        c.id   AS county_id,
+        c.code AS county_code,
+        c.name AS county_name,
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name
+    FROM configuration.counties c
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE s.code = $1
+      AND LOWER(c.name) = LOWER($2)
+      AND COALESCE(c.is_active, TRUE) = TRUE
+    LIMIT 1
+  fetch_jurisdiction_by_code: |
+    SELECT
+        j.id   AS jurisdiction_id,
+        j.code AS jurisdiction_code,
+        j.name AS jurisdiction_name,
+        j.jurisdiction_type,
+        c.id   AS county_id,
+        c.name AS county_name,
+        c.code AS county_code,
+        s.id   AS state_id,
+        s.code AS state_code,
+        s.name AS state_name
+    FROM configuration.jurisdictions j
+    INNER JOIN configuration.counties c ON c.id = j.county_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE j.code = $1
+      AND COALESCE(j.is_active, TRUE) = TRUE
+    LIMIT 1
+  fetch_active_workflow_by_ids: |
+    SELECT
+        wd.id AS workflow_id,
+        wd.workflow_code,
+        wd.workflow_name,
+        wd.version,
+        wd.status,
+        wd.jurisdiction_id,
+        wd.case_subtype_id
+    FROM configuration.workflow_definitions wd
+    WHERE wd.jurisdiction_id = $1
+      AND wd.case_subtype_id = $2
+      AND wd.status = 'ACTIVE'
+    LIMIT 1
+  fetch_workflow_by_code: |
+    SELECT
+        wd.id AS workflow_id,
+        wd.workflow_code,
+        wd.workflow_name,
+        wd.version,
+        wd.status,
+        j.code AS jurisdiction_code,
+        ct.name AS case_type,
+        cs.name AS sub_case_type
+    FROM configuration.workflow_definitions wd
+    INNER JOIN configuration.jurisdictions j ON j.id = wd.jurisdiction_id
+    INNER JOIN configuration.case_subtypes cs ON cs.id = wd.case_subtype_id
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    WHERE wd.workflow_code = $1
+      AND ($2::text IS NULL OR j.code = $2)
+    ORDER BY wd.version DESC
+    LIMIT 1
+  fetch_workflows_by_jurisdiction: |
+    SELECT
+        wd.id AS workflow_id,
+        wd.workflow_code,
+        wd.workflow_name,
+        wd.version,
+        wd.status,
+        ct.name AS case_type,
+        cs.name AS sub_case_type,
+        j.code AS jurisdiction_code
+    FROM configuration.workflow_definitions wd
+    INNER JOIN configuration.jurisdictions j ON j.id = wd.jurisdiction_id
+    INNER JOIN configuration.case_subtypes cs ON cs.id = wd.case_subtype_id
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    WHERE j.code = $1
+      AND wd.status = 'ACTIVE'
+    ORDER BY ct.name, cs.name, wd.workflow_name
+  fetch_workflow_questions: |
+    SELECT
+        q.id AS question_id,
+        q.code AS field_name,
+        q.question_text AS field_label,
+        q.question_type,
+        q.placeholder,
+        q.help_text,
+        q.validation_rules,
+        wq.is_required AS required,
+        wq.sort_order,
+        wq.visibility_condition,
+        wq.workflow_id
+    FROM configuration.workflow_questions wq
+    INNER JOIN configuration.questions q ON q.id = wq.question_id
+    WHERE wq.workflow_id = $1
+      AND COALESCE(q.is_active, TRUE) = TRUE
+    ORDER BY wq.sort_order NULLS LAST, q.code
+  fetch_document_template_by_code: |
+    SELECT
+        dt.id AS template_id,
+        dt.code AS template_code,
+        dt.name AS template_name,
+        dt.description AS template_description,
+        tv.id AS template_version_id,
+        tv.version AS template_version,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.effective_from,
+        tv.effective_to
+    FROM configuration.document_templates dt
+    LEFT JOIN LATERAL (
+        SELECT tv2.*
+        FROM configuration.template_versions tv2
+        WHERE tv2.template_id = dt.id
+        ORDER BY tv2.version DESC
+        LIMIT 1
+    ) tv ON TRUE
+    WHERE dt.code = $1
+      AND COALESCE(dt.is_active, TRUE) = TRUE
+    LIMIT 1
+  fetch_template_version: |
+    SELECT
+        tv.id AS template_version_id,
+        tv.template_id,
+        tv.version AS template_version,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.effective_from,
+        tv.effective_to
+    FROM configuration.template_versions tv
+    WHERE tv.template_id = $1
+      AND tv.version = $2
+    LIMIT 1
+  fetch_effective_template_version: |
+    SELECT
+        tv.id AS template_version_id,
+        tv.template_id,
+        tv.version AS template_version,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.effective_from,
+        tv.effective_to
+    FROM configuration.template_versions tv
+    WHERE tv.template_id = $1
+      AND (tv.effective_from IS NULL OR tv.effective_from <= $2::date)
+      AND (tv.effective_to IS NULL OR tv.effective_to >= $2::date)
+    ORDER BY tv.version DESC
+    LIMIT 1
+  fetch_document_rules_by_workflow: |
+    SELECT
+        dr.id AS document_rule_id,
+        dr.workflow_id,
+        dr.is_required,
+        dr.condition AS rule_condition,
+        dt.id AS template_id,
+        dt.code AS template_code,
+        dt.name AS template_name,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.version AS template_version
+    FROM configuration.document_rules dr
+    INNER JOIN configuration.document_templates dt ON dt.id = dr.template_id
+    LEFT JOIN LATERAL (
+        SELECT tv2.*
+        FROM configuration.template_versions tv2
+        WHERE tv2.template_id = dt.id
+        ORDER BY tv2.version DESC
+        LIMIT 1
+    ) tv ON TRUE
+    WHERE dr.workflow_id = $1
+      AND COALESCE(dt.is_active, TRUE) = TRUE
+    ORDER BY dt.name
+  fetch_package_import_latest: |
+    SELECT
+        pi.id,
+        pi.package_id,
+        pi.package_version,
+        pi.source_path,
+        pi.imported_at
+    FROM configuration.package_imports pi
+    WHERE pi.package_id = $1
+    ORDER BY pi.imported_at DESC NULLS LAST
+    LIMIT 1
+  fetch_package_import_by_version: |
+    SELECT
+        pi.id,
+        pi.package_id,
+        pi.package_version,
+        pi.source_path,
+        pi.imported_at
+    FROM configuration.package_imports pi
+    WHERE pi.package_id = $1
+      AND pi.package_version = $2
+    LIMIT 1
+  list_package_imports: |
+    SELECT
+        pi.id,
+        pi.package_id,
+        pi.package_version,
+        pi.source_path,
+        pi.imported_at
+    FROM configuration.package_imports pi
+    ORDER BY pi.imported_at DESC NULLS LAST
+    LIMIT $1
+verification:
+  count_package_imports: |
+    SELECT count(1)::int AS n FROM configuration.package_imports
+  count_questions: |
+    SELECT count(1)::int AS n FROM configuration.questions
+  count_workflow_definitions: |
+    SELECT count(1)::int AS n FROM configuration.workflow_definitions
+  count_workflow_questions: |
+    SELECT count(1)::int AS n FROM configuration.workflow_questions
+  count_document_templates: |
+    SELECT count(1)::int AS n FROM configuration.document_templates
+  count_document_rules: |
+    SELECT count(1)::int AS n FROM configuration.document_rules
+  count_kb_vectors: |
+    SELECT count(1)::int AS n FROM knowledge.kb_vectors
+  state_code_exists: |
+    SELECT code FROM configuration.states WHERE code = $1
+  count_cases: SELECT count(1)::int AS n FROM operational.cases WHERE deleted_at IS NULL
+  count_template_versions: SELECT count(1)::int AS n FROM configuration.template_versions
+  count_filing_sessions: SELECT count(1)::int AS n FROM workflow.filing_sessions
+  count_documents: SELECT count(1)::int AS n FROM documents.documents
+  count_counties: SELECT count(1)::int AS n FROM configuration.counties
+  count_jurisdictions: SELECT count(1)::int AS n FROM configuration.jurisdictions
+  count_case_types: SELECT count(1)::int AS n FROM configuration.case_types
+  count_case_subtypes: SELECT count(1)::int AS n FROM configuration.case_subtypes
+  jurisdiction_code_exists: SELECT code FROM configuration.jurisdictions WHERE code = $1 LIMIT 1
+  workflow_code_exists: |
+    SELECT workflow_code FROM configuration.workflow_definitions WHERE workflow_code = $1 LIMIT 1
+  question_code_exists: SELECT code FROM configuration.questions WHERE code = $1 LIMIT 1
+  template_code_exists: SELECT code FROM configuration.document_templates WHERE code = $1 LIMIT 1
+  package_import_exists: SELECT 1 FROM configuration.package_imports WHERE package_id = $1 LIMIT 1
+  count_kb_by_matter: |
+    SELECT matter_type, count(1)::int AS n
+    FROM knowledge.kb_vectors
+    WHERE ($1::text IS NULL OR matter_type = $1)
+    GROUP BY matter_type
+    ORDER BY matter_type
+legal_filing:
+  fetch_user_details_by_case_type: |
+    SELECT
+        q.id                 AS question_id,
+        q.code               AS field_name,
+        q.question_text      AS field_label,
+        q.question_type,
+        q.placeholder,
+        q.help_text,
+        q.validation_rules,
+        wq.is_required       AS required,
+        wq.sort_order,
+        wq.visibility_condition,
+        wd.id                AS workflow_id,
+        wd.workflow_name,
+        j.code               AS jurisdiction_code
+    FROM configuration.workflow_definitions wd
+    INNER JOIN configuration.case_subtypes cs ON cs.id = wd.case_subtype_id
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    INNER JOIN configuration.jurisdictions j ON j.id = wd.jurisdiction_id
+    INNER JOIN configuration.workflow_questions wq ON wq.workflow_id = wd.id
+    INNER JOIN configuration.questions q ON q.id = wq.question_id
+    WHERE wd.status = 'ACTIVE'
+      AND COALESCE(q.is_active, TRUE) = TRUE
+      AND ct.name = $1
+      AND cs.name = $2
+      AND ($3::text IS NULL OR j.code = $3)
+    ORDER BY wq.sort_order NULLS LAST, q.code
+  fetch_document_templates_for_workflow: |
+    SELECT
+        dt.id            AS template_id,
+        dt.code          AS template_code,
+        dt.name          AS template_name,
+        dt.description   AS template_description,
+        dr.is_required   AS is_required,
+        dr.condition     AS rule_condition,
+        wd.id            AS workflow_id,
+        wd.workflow_name,
+        tv.id            AS template_version_id,
+        tv.version       AS template_version,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.effective_from,
+        tv.effective_to
+    FROM configuration.workflow_definitions wd
+    INNER JOIN configuration.case_subtypes cs ON cs.id = wd.case_subtype_id
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    INNER JOIN configuration.jurisdictions j ON j.id = wd.jurisdiction_id
+    INNER JOIN configuration.document_rules dr ON dr.workflow_id = wd.id
+    INNER JOIN configuration.document_templates dt ON dt.id = dr.template_id
+    LEFT JOIN LATERAL (
+        SELECT tv2.*
+        FROM configuration.template_versions tv2
+        WHERE tv2.template_id = dt.id
+        ORDER BY tv2.version DESC
+        LIMIT 1
+    ) tv ON TRUE
+    WHERE wd.status = 'ACTIVE'
+      AND COALESCE(dt.is_active, TRUE) = TRUE
+      AND ct.name = $1
+      AND cs.name = $2
+      AND ($3::text IS NULL OR j.code = $3)
+    ORDER BY dt.name
+  fetch_document_template: |
+    SELECT
+        dt.id            AS template_id,
+        dt.code          AS template_code,
+        dt.name          AS template_name,
+        dt.description   AS template_description,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.version       AS template_version,
+        wd.workflow_name,
+        j.code           AS jurisdiction_code
+    FROM configuration.workflow_definitions wd
+    INNER JOIN configuration.case_subtypes cs ON cs.id = wd.case_subtype_id
+    INNER JOIN configuration.case_types ct ON ct.id = cs.case_type_id
+    INNER JOIN configuration.jurisdictions j ON j.id = wd.jurisdiction_id
+    INNER JOIN configuration.document_rules dr ON dr.workflow_id = wd.id
+    INNER JOIN configuration.document_templates dt ON dt.id = dr.template_id
+    LEFT JOIN LATERAL (
+        SELECT tv2.*
+        FROM configuration.template_versions tv2
+        WHERE tv2.template_id = dt.id
+        ORDER BY tv2.version DESC
+        LIMIT 1
+    ) tv ON TRUE
+    WHERE wd.status = 'ACTIVE'
+      AND COALESCE(dt.is_active, TRUE) = TRUE
+      AND ct.name = $1
+      AND cs.name = $2
+      AND ($4::text IS NULL OR j.code = $4)
+      AND (
+            LOWER(dt.code) = LOWER($3)
+         OR LOWER(REPLACE(dt.code, '_', ' ')) = LOWER($3)
+         OR LOWER(dt.name) LIKE '%' || LOWER($3) || '%'
+      )
+    ORDER BY tv.version DESC NULLS LAST
+    LIMIT 1
+  fetch_user_details_by_case_number: |
+    SELECT
+        c.id              AS case_id,
+        c.case_number,
+        c.title,
+        c.status,
+        c.opened_at       AS filing_date,
+        ct.name           AS case_type,
+        cs.name           AS sub_case_type,
+        j.name            AS court_name,
+        j.code            AS jurisdiction_code,
+        co.name           AS county,
+        s.code            AS state_code,
+        s.name            AS state_name
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+    INNER JOIN configuration.counties co ON co.id = c.county_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE c.case_number = $1
+      AND c.deleted_at IS NULL
+    LIMIT 1
+  fetch_user_details_by_party: |
+    SELECT
+        c.id              AS case_id,
+        c.case_number,
+        c.title,
+        c.status,
+        c.opened_at       AS filing_date,
+        ct.name           AS case_type,
+        cs.name           AS sub_case_type,
+        j.name            AS court_name,
+        j.code            AS jurisdiction_code,
+        co.name           AS county,
+        s.code            AS state_code,
+        s.name            AS state_name
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+    INNER JOIN configuration.counties co ON co.id = c.county_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE c.case_number = $1
+      AND c.deleted_at IS NULL
+    LIMIT 1
+  fetch_available_court_files: |
+    SELECT
+        dt.id            AS template_id,
+        dt.code          AS template_code,
+        dt.name          AS template_name,
+        dt.description   AS template_description,
+        dr.is_required   AS is_required,
+        tv.s3_bucket,
+        tv.s3_key,
+        tv.version       AS template_version
+    FROM operational.cases c
+    INNER JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.workflow_definitions wd
+        ON wd.case_subtype_id = cs.id
+       AND wd.jurisdiction_id = c.jurisdiction_id
+       AND wd.status = 'ACTIVE'
+    INNER JOIN configuration.document_rules dr ON dr.workflow_id = wd.id
+    INNER JOIN configuration.document_templates dt ON dt.id = dr.template_id
+    LEFT JOIN LATERAL (
+        SELECT tv2.*
+        FROM configuration.template_versions tv2
+        WHERE tv2.template_id = dt.id
+        ORDER BY tv2.version DESC
+        LIMIT 1
+    ) tv ON TRUE
+    WHERE c.case_number = $1
+      AND c.deleted_at IS NULL
+      AND COALESCE(dt.is_active, TRUE) = TRUE
+    ORDER BY dt.name
+  search_by_party_names: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.opened_at AS filing_date,
+        ct.name     AS case_type,
+        cs.name     AS sub_case_type,
+        c.status
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    WHERE c.deleted_at IS NULL
+      AND (
+            c.title ILIKE $1
+         OR c.case_number ILIKE $1
+         OR c.description ILIKE $1
+      )
+    ORDER BY c.opened_at DESC NULLS LAST
+    LIMIT 25
+  search_by_filing_date: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.opened_at AS filing_date,
+        ct.name     AS case_type,
+        cs.name     AS sub_case_type,
+        c.status
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    WHERE c.deleted_at IS NULL
+      AND c.opened_at::date = $1::date
+    ORDER BY c.case_number
+    LIMIT 25
+  fetch_case_by_id: |
+    SELECT
+        c.id              AS case_id,
+        c.case_number,
+        c.title,
+        c.status,
+        c.priority,
+        c.opened_at       AS filing_date,
+        c.filing_deadline,
+        c.is_archived,
+        ct.name           AS case_type,
+        cs.name           AS sub_case_type,
+        j.name            AS court_name,
+        j.code            AS jurisdiction_code,
+        co.name           AS county,
+        s.code            AS state_code,
+        s.name            AS state_name
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+    INNER JOIN configuration.counties co ON co.id = c.county_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE c.id = $1
+      AND c.deleted_at IS NULL
+    LIMIT 1
+  search_cases_by_status: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.opened_at AS filing_date,
+        ct.name     AS case_type,
+        cs.name     AS sub_case_type,
+        c.status,
+        s.code      AS state_code
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE c.deleted_at IS NULL
+      AND c.status = $1
+      AND ($2::text IS NULL OR s.code = $2)
+    ORDER BY c.opened_at DESC NULLS LAST
+    LIMIT 25
+  search_cases_by_jurisdiction: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.opened_at AS filing_date,
+        ct.name     AS case_type,
+        cs.name     AS sub_case_type,
+        c.status,
+        j.code      AS jurisdiction_code
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+    WHERE c.deleted_at IS NULL
+      AND j.code = $1
+    ORDER BY c.opened_at DESC NULLS LAST
+    LIMIT 25
+  search_cases_by_date_range: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.opened_at AS filing_date,
+        ct.name     AS case_type,
+        cs.name     AS sub_case_type,
+        c.status
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    WHERE c.deleted_at IS NULL
+      AND c.opened_at::date BETWEEN $1::date AND $2::date
+    ORDER BY c.opened_at DESC NULLS LAST
+    LIMIT 50
+  search_cases_by_type: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.opened_at AS filing_date,
+        ct.name     AS case_type,
+        cs.name     AS sub_case_type,
+        c.status
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    WHERE c.deleted_at IS NULL
+      AND ct.name = $1
+      AND ($2::text IS NULL OR cs.name = $2)
+    ORDER BY c.opened_at DESC NULLS LAST
+    LIMIT 25
+  fetch_cases_approaching_deadline: |
+    SELECT
+        c.case_number,
+        c.title,
+        c.filing_deadline,
+        c.status,
+        ct.name AS case_type,
+        cs.name AS sub_case_type,
+        j.code  AS jurisdiction_code
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+    WHERE c.deleted_at IS NULL
+      AND c.is_archived = FALSE
+      AND c.filing_deadline BETWEEN $1::date AND $2::date
+    ORDER BY c.filing_deadline ASC
+    LIMIT 50
+operational:
+  fetch_user_by_email: |
+    SELECT
+        u.id AS user_id,
+        u.email,
+        u.session_id,
+        u.created_at
+    FROM operational.users u
+    WHERE LOWER(u.email) = LOWER($1)
+    LIMIT 1
+  fetch_user_with_profile: |
+    SELECT
+        u.id AS user_id,
+        u.email,
+        u.session_id,
+        up.first_name,
+        up.middle_name,
+        up.last_name,
+        up.date_of_birth
+    FROM operational.users u
+    LEFT JOIN operational.user_profiles up ON up.user_id = u.id
+    WHERE u.id = $1
+    LIMIT 1
+  list_cases_by_user: |
+    SELECT
+        c.id AS case_id,
+        c.case_number,
+        c.title,
+        c.status,
+        c.priority,
+        c.opened_at AS filing_date,
+        c.filing_deadline,
+        c.is_archived,
+        ct.name AS case_type,
+        cs.name AS sub_case_type,
+        j.code  AS jurisdiction_code,
+        s.code  AS state_code
+    FROM operational.cases c
+    INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+    LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+    INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+    INNER JOIN configuration.states s ON s.id = c.state_id
+    WHERE c.user_id = $1
+      AND c.deleted_at IS NULL
+      AND ($2::boolean IS NULL OR c.is_archived = $2)
+    ORDER BY c.opened_at DESC NULLS LAST
+    LIMIT COALESCE($3::int, 50)
+workflow:
+  fetch_session_by_id: |
+    SELECT
+        fs.id AS session_id,
+        fs.case_id,
+        fs.user_id,
+        fs.workflow_id,
+        fs.status,
+        fs.current_step,
+        fs.started_at,
+        fs.completed_at,
+        fs.last_activity_at,
+        c.case_number,
+        wd.workflow_code,
+        wd.workflow_name
+    FROM workflow.filing_sessions fs
+    INNER JOIN operational.cases c ON c.id = fs.case_id
+    INNER JOIN configuration.workflow_definitions wd ON wd.id = fs.workflow_id
+    WHERE fs.id = $1
+    LIMIT 1
+  fetch_active_session_for_case: |
+    SELECT
+        fs.id AS session_id,
+        fs.case_id,
+        fs.user_id,
+        fs.workflow_id,
+        fs.status,
+        fs.current_step,
+        fs.started_at,
+        fs.last_activity_at
+    FROM workflow.filing_sessions fs
+    WHERE fs.case_id = $1
+      AND fs.status = 'IN_PROGRESS'
+    ORDER BY fs.last_activity_at DESC NULLS LAST, fs.started_at DESC
+    LIMIT 1
+  list_sessions_by_user: |
+    SELECT
+        fs.id AS session_id,
+        fs.case_id,
+        fs.workflow_id,
+        fs.status,
+        fs.current_step,
+        fs.started_at,
+        fs.last_activity_at,
+        c.case_number,
+        wd.workflow_name
+    FROM workflow.filing_sessions fs
+    INNER JOIN operational.cases c ON c.id = fs.case_id
+    INNER JOIN configuration.workflow_definitions wd ON wd.id = fs.workflow_id
+    WHERE fs.user_id = $1
+      AND ($2::text IS NULL OR fs.status = $2)
+    ORDER BY fs.last_activity_at DESC NULLS LAST, fs.started_at DESC
+    LIMIT COALESCE($3::int, 50)
+  fetch_answers_by_session: |
+    SELECT
+        fa.id AS answer_id,
+        fa.session_id,
+        fa.question_id,
+        q.code AS question_code,
+        q.question_text,
+        fa.answer_value,
+        fa.created_at,
+        fa.updated_at
+    FROM workflow.filing_answers fa
+    INNER JOIN configuration.questions q ON q.id = fa.question_id
+    WHERE fa.session_id = $1
+    ORDER BY fa.created_at NULLS LAST, q.code
+  fetch_answer_by_question_code: |
+    SELECT
+        fa.id AS answer_id,
+        fa.session_id,
+        fa.question_id,
+        q.code AS question_code,
+        fa.answer_value
+    FROM workflow.filing_answers fa
+    INNER JOIN configuration.questions q ON q.id = fa.question_id
+    WHERE fa.session_id = $1
+      AND q.code = $2
+    LIMIT 1
+  fetch_missing_required_answers: |
+    SELECT
+        q.id AS question_id,
+        q.code AS question_code,
+        q.question_text,
+        wq.is_required,
+        wq.sort_order
+    FROM workflow.filing_sessions fs
+    INNER JOIN configuration.workflow_questions wq ON wq.workflow_id = fs.workflow_id
+    INNER JOIN configuration.questions q ON q.id = wq.question_id
+    LEFT JOIN workflow.filing_answers fa
+        ON fa.session_id = fs.id
+       AND fa.question_id = q.id
+    WHERE fs.id = $1
+      AND wq.is_required = TRUE
+      AND COALESCE(q.is_active, TRUE) = TRUE
+      AND (fa.id IS NULL OR NULLIF(TRIM(fa.answer_value), '') IS NULL)
+    ORDER BY wq.sort_order NULLS LAST, q.code
+  list_events_by_session: |
+    SELECT
+        we.id AS event_id,
+        we.session_id,
+        we.event_type,
+        we.entity_name,
+        we.entity_id,
+        we.action,
+        we.event_data,
+        we.created_at
+    FROM workflow.workflow_events we
+    WHERE we.session_id = $1
+    ORDER BY we.created_at ASC
+  fetch_submission_by_session: |
+    SELECT
+        js.id AS submission_id,
+        js.session_id,
+        js.provider_id,
+        js.reference_number,
+        js.submission_status,
+        js.submitted_at,
+        js.response_message,
+        js.response_received_at
+    FROM workflow.jurisdiction_submissions js
+    WHERE js.session_id = $1
+    ORDER BY js.submitted_at DESC NULLS LAST
+    LIMIT 1
+  fetch_submission_by_reference: |
+    SELECT
+        js.id AS submission_id,
+        js.session_id,
+        js.provider_id,
+        js.reference_number,
+        js.submission_status,
+        js.submitted_at
+    FROM workflow.jurisdiction_submissions js
+    WHERE js.reference_number = $1
+    LIMIT 1
+documents:
+  list_by_case: |
+    SELECT
+        d.id AS document_id,
+        d.case_id,
+        d.session_id,
+        d.document_name,
+        d.document_type,
+        d.source,
+        d.status,
+        d.s3_bucket,
+        d.s3_key,
+        d.mime_type,
+        d.created_at
+    FROM documents.documents d
+    WHERE d.case_id = $1
+      AND ($2::text IS NULL OR d.status = $2)
+    ORDER BY d.created_at DESC
+  list_by_session: |
+    SELECT
+        d.id AS document_id,
+        d.case_id,
+        d.session_id,
+        d.document_name,
+        d.document_type,
+        d.source,
+        d.status,
+        d.s3_bucket,
+        d.s3_key,
+        d.created_at
+    FROM documents.documents d
+    WHERE d.session_id = $1
+    ORDER BY d.created_at DESC
+  fetch_by_id: |
+    SELECT
+        d.id AS document_id,
+        d.case_id,
+        d.session_id,
+        d.document_name,
+        d.document_type,
+        d.source,
+        d.status,
+        d.s3_bucket,
+        d.s3_key,
+        d.mime_type,
+        d.template_version_id,
+        dv.id AS document_version_id,
+        dv.version_number,
+        dv.s3_bucket AS version_s3_bucket,
+        dv.s3_key AS version_s3_key
+    FROM documents.documents d
+    LEFT JOIN LATERAL (
+        SELECT dv2.*
+        FROM documents.document_versions dv2
+        WHERE dv2.document_id = d.id
+        ORDER BY dv2.version_number DESC
+        LIMIT 1
+    ) dv ON TRUE
+    WHERE d.id = $1
+    LIMIT 1
+  fetch_latest_version: |
+    SELECT
+        dv.id AS document_version_id,
+        dv.document_id,
+        dv.version_number,
+        dv.s3_bucket,
+        dv.s3_key
+    FROM documents.document_versions dv
+    WHERE dv.document_id = $1
+    ORDER BY dv.version_number DESC
+    LIMIT 1
+  list_filed_by_case: |
+    SELECT
+        d.id AS document_id,
+        d.document_name,
+        d.document_type,
+        d.s3_bucket,
+        d.s3_key,
+        d.created_at
+    FROM documents.documents d
+    WHERE d.case_id = $1
+      AND d.status = 'FILED'
+    ORDER BY d.created_at DESC
+knowledge:
+  fetch_active_matter_types: |
+    SELECT
+        mt.matter_type_id,
+        mt.display_name,
+        mt.required_content_types,
+        mt.high_risk_topics,
+        mt.default_disclaimer
+    FROM knowledge.matter_types mt
+    WHERE COALESCE(mt.active, TRUE) = TRUE
+    ORDER BY mt.display_name
+  fetch_matter_type: |
+    SELECT
+        mt.matter_type_id,
+        mt.display_name,
+        mt.required_content_types,
+        mt.high_risk_topics,
+        mt.default_disclaimer,
+        mt.active
+    FROM knowledge.matter_types mt
+    WHERE mt.matter_type_id = $1
+    LIMIT 1
+  fetch_jurisdiction: |
+    SELECT
+        kj.jurisdiction_id,
+        kj.state,
+        kj.abbreviation,
+        kj.scope,
+        kj.requires_county_configuration
+    FROM knowledge.jurisdictions kj
+    WHERE kj.jurisdiction_id = $1
+    LIMIT 1
+  fetch_counties_by_jurisdiction: |
+    SELECT
+        kc.county_id,
+        kc.jurisdiction_id,
+        kc.county_name
+    FROM knowledge.counties kc
+    WHERE kc.jurisdiction_id = $1
+    ORDER BY kc.county_name
+  fetch_source: |
+    SELECT
+        s.source_id,
+        s.title,
+        s.url,
+        s.authority,
+        s.last_verified
+    FROM knowledge.sources s
+    WHERE s.source_id = $1
+    LIMIT 1
+  list_vectors_by_matter: |
+    SELECT
+        kv.content_id,
+        kv.content_type,
+        kv.matter_type,
+        kv.jurisdiction_id,
+        kv.state,
+        kv.county_id,
+        kv.case_variant,
+        kv.scope,
+        kv.topics,
+        kv.text AS chunk_text,
+        kv.last_verified
+    FROM knowledge.kb_vectors kv
+    WHERE kv.matter_type = $1
+    ORDER BY kv.created_at DESC NULLS LAST
+    LIMIT COALESCE($2::int, 50)
+  search_vectors_fts: |
+    SELECT
+        kv.content_id,
+        kv.content_type,
+        kv.matter_type,
+        kv.jurisdiction_id,
+        kv.state,
+        kv.county_id,
+        kv.case_variant,
+        kv.topics,
+        kv.text AS chunk_text,
+        ts_rank(kv.text_search, plainto_tsquery('english', $1)) AS rank
+    FROM knowledge.kb_vectors kv
+    WHERE kv.text_search @@ plainto_tsquery('english', $1)
+      AND ($2::text IS NULL OR kv.matter_type = $2)
+      AND ($3::text IS NULL OR kv.jurisdiction_id = $3)
+      AND ($4::text IS NULL OR kv.county_id = $4)
+    ORDER BY rank DESC
+    LIMIT COALESCE($5::int, 20)
+  search_vectors_similarity: |
+    SELECT
+        kv.content_id,
+        kv.content_type,
+        kv.matter_type,
+        kv.jurisdiction_id,
+        kv.state,
+        kv.county_id,
+        kv.case_variant,
+        kv.topics,
+        kv.text AS chunk_text,
+        1 - (kv.embedding <=> $1::vector) AS score
+    FROM knowledge.kb_vectors kv
+    WHERE kv.embedding IS NOT NULL
+      AND ($2::text IS NULL OR kv.matter_type = $2)
+      AND ($3::text IS NULL OR kv.jurisdiction_id = $3)
+      AND ($4::text IS NULL OR kv.county_id = $4)
+    ORDER BY kv.embedding <=> $1::vector
+    LIMIT COALESCE($5::int, 20)
+  fetch_vector_with_sources: |
+    SELECT
+        kv.content_id,
+        kv.content_type,
+        kv.matter_type,
+        kv.jurisdiction_id,
+        kv.state,
+        kv.county_id,
+        kv.text AS chunk_text,
+        s.source_id,
+        s.title AS source_title,
+        s.url AS source_url,
+        s.authority
+    FROM knowledge.kb_vectors kv
+    LEFT JOIN knowledge.vector_sources vs ON vs.content_id = kv.content_id
+    LEFT JOIN knowledge.sources s ON s.source_id = vs.source_id
+    WHERE kv.content_id = $1
+conversations:
+  fetch_active_by_user: |
+    SELECT
+        c.id AS conversation_id,
+        c.user_id,
+        c.case_id,
+        c.session_id,
+        c.status,
+        c.started_at
+    FROM conversations.conversations c
+    WHERE c.user_id = $1
+      AND c.status = 'ACTIVE'
+      AND ($2::uuid IS NULL OR c.case_id = $2)
+    ORDER BY c.started_at DESC
+    LIMIT 1
+  list_messages: |
+    SELECT
+        m.id AS message_id,
+        m.conversation_id,
+        m.sender,
+        m.message,
+        m.created_at
+    FROM conversations.messages m
+    WHERE m.conversation_id = $1
+    ORDER BY m.created_at ASC
+    LIMIT COALESCE($2::int, 200)
+  list_attachments: |
+    SELECT
+        a.id AS attachment_id,
+        a.conversation_id,
+        a.document_id,
+        d.document_name,
+        d.document_type,
+        d.s3_bucket,
+        d.s3_key
+    FROM conversations.attachments a
+    INNER JOIN documents.documents d ON d.id = a.document_id
+    WHERE a.conversation_id = $1
+    ORDER BY a.created_at DESC NULLS LAST
+integration:
+  fetch_active_providers: |
+    SELECT
+        p.id AS provider_id,
+        p.provider_name,
+        p.provider_type,
+        p.status
+    FROM integration.api_providers p
+    WHERE p.status = 'ACTIVE'
+      AND ($1::text IS NULL OR p.provider_type = $1)
+    ORDER BY p.provider_name
+  fetch_payments_by_session: |
+    SELECT
+        pay.id AS payment_id,
+        pay.session_id,
+        pay.submission_id,
+        pay.fee_type,
+        pay.amount,
+        pay.currency,
+        pay.payment_method,
+        pay.status,
+        pay.external_transaction_id,
+        pay.paid_at,
+        pay.created_at
+    FROM integration.payments pay
+    WHERE pay.session_id = $1
+    ORDER BY pay.created_at DESC
+  fetch_recent_api_logs: |
+    SELECT
+        l.id AS log_id,
+        l.provider_id,
+        l.request_type,
+        l.status,
+        l.response_code,
+        l.reference_id,
+        l.created_at
+    FROM integration.api_logs l
+    WHERE ($1::uuid IS NULL OR l.provider_id = $1)
+    ORDER BY l.created_at DESC
+    LIMIT COALESCE($2::int, 50)

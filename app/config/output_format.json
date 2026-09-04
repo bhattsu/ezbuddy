@@ -1,0 +1,21 @@
+{
+     "document_type": "Invoice/Receipt/Form/Contract/Report/Medical Record/etc.",
+     "extracted_fields": {
+       "description": "All key-value pairs found in the document",
+       "fields": {}
+     },
+     "tables": [
+       {
+         "table_name": "string",
+         "headers": ["column1", "column2"],
+         "rows": [
+           ["value1", "value2"]
+         ]
+       }
+     ],
+     "summary": "Brief description of document content",
+     "metadata": {
+       "total_fields_extracted": 0,
+       "confidence": 0.0
+     }
+}

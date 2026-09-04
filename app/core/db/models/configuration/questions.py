@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer,
+    Numeric, String, Text, UniqueConstraint, text as sql_text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.schema import Computed
+
+from app.core.db.base import Base
+
+
+class Question(Base):
+    __tablename__ = "questions"
+    __table_args__ = {"schema": "configuration"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=sql_text("gen_random_uuid()"))
+    code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    question_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    placeholder: Mapped[Optional[str]] = mapped_column(Text)
+    help_text: Mapped[Optional[str]] = mapped_column(Text)
+    validation_rules: Mapped[Optional[dict]] = mapped_column(JSONB)
+    is_active: Mapped[Optional[bool]] = mapped_column(Boolean, server_default=sql_text("true"))
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, server_default=sql_text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, server_default=sql_text("CURRENT_TIMESTAMP"))

@@ -1,0 +1,42 @@
+# API providers, payments, logs.
+# Access: get_sql("integration.<query_name>")
+
+fetch_active_providers: |
+  SELECT
+      p.id AS provider_id,
+      p.provider_name,
+      p.provider_type,
+      p.status
+  FROM integration.api_providers p
+  WHERE p.status = 'ACTIVE'
+    AND ($1::text IS NULL OR p.provider_type = $1)
+  ORDER BY p.provider_name
+fetch_payments_by_session: |
+  SELECT
+      pay.id AS payment_id,
+      pay.session_id,
+      pay.submission_id,
+      pay.fee_type,
+      pay.amount,
+      pay.currency,
+      pay.payment_method,
+      pay.status,
+      pay.external_transaction_id,
+      pay.paid_at,
+      pay.created_at
+  FROM integration.payments pay
+  WHERE pay.session_id = $1
+  ORDER BY pay.created_at DESC
+fetch_recent_api_logs: |
+  SELECT
+      l.id AS log_id,
+      l.provider_id,
+      l.request_type,
+      l.status,
+      l.response_code,
+      l.reference_id,
+      l.created_at
+  FROM integration.api_logs l
+  WHERE ($1::uuid IS NULL OR l.provider_id = $1)
+  ORDER BY l.created_at DESC
+  LIMIT COALESCE($2::int, 50)

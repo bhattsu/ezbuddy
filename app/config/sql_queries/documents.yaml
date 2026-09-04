@@ -1,0 +1,85 @@
+# Generated and uploaded case documents.
+# Access: get_sql("documents.<query_name>")
+
+list_by_case: |
+  SELECT
+      d.id AS document_id,
+      d.case_id,
+      d.session_id,
+      d.document_name,
+      d.document_type,
+      d.source,
+      d.status,
+      d.s3_bucket,
+      d.s3_key,
+      d.mime_type,
+      d.created_at
+  FROM documents.documents d
+  WHERE d.case_id = $1
+    AND ($2::text IS NULL OR d.status = $2)
+  ORDER BY d.created_at DESC
+list_by_session: |
+  SELECT
+      d.id AS document_id,
+      d.case_id,
+      d.session_id,
+      d.document_name,
+      d.document_type,
+      d.source,
+      d.status,
+      d.s3_bucket,
+      d.s3_key,
+      d.created_at
+  FROM documents.documents d
+  WHERE d.session_id = $1
+  ORDER BY d.created_at DESC
+fetch_by_id: |
+  SELECT
+      d.id AS document_id,
+      d.case_id,
+      d.session_id,
+      d.document_name,
+      d.document_type,
+      d.source,
+      d.status,
+      d.s3_bucket,
+      d.s3_key,
+      d.mime_type,
+      d.template_version_id,
+      dv.id AS document_version_id,
+      dv.version_number,
+      dv.s3_bucket AS version_s3_bucket,
+      dv.s3_key AS version_s3_key
+  FROM documents.documents d
+  LEFT JOIN LATERAL (
+      SELECT dv2.*
+      FROM documents.document_versions dv2
+      WHERE dv2.document_id = d.id
+      ORDER BY dv2.version_number DESC
+      LIMIT 1
+  ) dv ON TRUE
+  WHERE d.id = $1
+  LIMIT 1
+fetch_latest_version: |
+  SELECT
+      dv.id AS document_version_id,
+      dv.document_id,
+      dv.version_number,
+      dv.s3_bucket,
+      dv.s3_key
+  FROM documents.document_versions dv
+  WHERE dv.document_id = $1
+  ORDER BY dv.version_number DESC
+  LIMIT 1
+list_filed_by_case: |
+  SELECT
+      d.id AS document_id,
+      d.document_name,
+      d.document_type,
+      d.s3_bucket,
+      d.s3_key,
+      d.created_at
+  FROM documents.documents d
+  WHERE d.case_id = $1
+    AND d.status = 'FILED'
+  ORDER BY d.created_at DESC

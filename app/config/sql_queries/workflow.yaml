@@ -1,0 +1,137 @@
+# Filing sessions, answers, submissions, events.
+# Access: get_sql("workflow.<query_name>")
+
+fetch_session_by_id: |
+  SELECT
+      fs.id AS session_id,
+      fs.case_id,
+      fs.user_id,
+      fs.workflow_id,
+      fs.status,
+      fs.current_step,
+      fs.started_at,
+      fs.completed_at,
+      fs.last_activity_at,
+      c.case_number,
+      wd.workflow_code,
+      wd.workflow_name
+  FROM workflow.filing_sessions fs
+  INNER JOIN operational.cases c ON c.id = fs.case_id
+  INNER JOIN configuration.workflow_definitions wd ON wd.id = fs.workflow_id
+  WHERE fs.id = $1
+  LIMIT 1
+fetch_active_session_for_case: |
+  SELECT
+      fs.id AS session_id,
+      fs.case_id,
+      fs.user_id,
+      fs.workflow_id,
+      fs.status,
+      fs.current_step,
+      fs.started_at,
+      fs.last_activity_at
+  FROM workflow.filing_sessions fs
+  WHERE fs.case_id = $1
+    AND fs.status = 'IN_PROGRESS'
+  ORDER BY fs.last_activity_at DESC NULLS LAST, fs.started_at DESC
+  LIMIT 1
+list_sessions_by_user: |
+  SELECT
+      fs.id AS session_id,
+      fs.case_id,
+      fs.workflow_id,
+      fs.status,
+      fs.current_step,
+      fs.started_at,
+      fs.last_activity_at,
+      c.case_number,
+      wd.workflow_name
+  FROM workflow.filing_sessions fs
+  INNER JOIN operational.cases c ON c.id = fs.case_id
+  INNER JOIN configuration.workflow_definitions wd ON wd.id = fs.workflow_id
+  WHERE fs.user_id = $1
+    AND ($2::text IS NULL OR fs.status = $2)
+  ORDER BY fs.last_activity_at DESC NULLS LAST, fs.started_at DESC
+  LIMIT COALESCE($3::int, 50)
+fetch_answers_by_session: |
+  SELECT
+      fa.id AS answer_id,
+      fa.session_id,
+      fa.question_id,
+      q.code AS question_code,
+      q.question_text,
+      fa.answer_value,
+      fa.created_at,
+      fa.updated_at
+  FROM workflow.filing_answers fa
+  INNER JOIN configuration.questions q ON q.id = fa.question_id
+  WHERE fa.session_id = $1
+  ORDER BY fa.created_at NULLS LAST, q.code
+fetch_answer_by_question_code: |
+  SELECT
+      fa.id AS answer_id,
+      fa.session_id,
+      fa.question_id,
+      q.code AS question_code,
+      fa.answer_value
+  FROM workflow.filing_answers fa
+  INNER JOIN configuration.questions q ON q.id = fa.question_id
+  WHERE fa.session_id = $1
+    AND q.code = $2
+  LIMIT 1
+fetch_missing_required_answers: |
+  SELECT
+      q.id AS question_id,
+      q.code AS question_code,
+      q.question_text,
+      wq.is_required,
+      wq.sort_order
+  FROM workflow.filing_sessions fs
+  INNER JOIN configuration.workflow_questions wq ON wq.workflow_id = fs.workflow_id
+  INNER JOIN configuration.questions q ON q.id = wq.question_id
+  LEFT JOIN workflow.filing_answers fa
+      ON fa.session_id = fs.id
+     AND fa.question_id = q.id
+  WHERE fs.id = $1
+    AND wq.is_required = TRUE
+    AND COALESCE(q.is_active, TRUE) = TRUE
+    AND (fa.id IS NULL OR NULLIF(TRIM(fa.answer_value), '') IS NULL)
+  ORDER BY wq.sort_order NULLS LAST, q.code
+list_events_by_session: |
+  SELECT
+      we.id AS event_id,
+      we.session_id,
+      we.event_type,
+      we.entity_name,
+      we.entity_id,
+      we.action,
+      we.event_data,
+      we.created_at
+  FROM workflow.workflow_events we
+  WHERE we.session_id = $1
+  ORDER BY we.created_at ASC
+fetch_submission_by_session: |
+  SELECT
+      js.id AS submission_id,
+      js.session_id,
+      js.provider_id,
+      js.reference_number,
+      js.submission_status,
+      js.submitted_at,
+      js.response_message,
+      js.response_received_at
+  FROM workflow.jurisdiction_submissions js
+  WHERE js.session_id = $1
+  ORDER BY js.submitted_at DESC NULLS LAST
+  LIMIT 1
+fetch_submission_by_reference: |
+  SELECT
+      js.id AS submission_id,
+      js.session_id,
+      js.provider_id,
+      js.reference_number,
+      js.submission_status,
+      js.submitted_at
+  FROM workflow.jurisdiction_submissions js
+  WHERE js.reference_number = $1
+  LIMIT 1

@@ -1,0 +1,28 @@
+# Connectivity and schema checks (asyncpg).
+# Access: get_sql("health.<query_name>")
+
+ping: |
+  SELECT 1
+list_schemas: |
+  SELECT nspname
+  FROM pg_namespace
+  WHERE nspname NOT LIKE 'pg_%'
+  ORDER BY 1
+schema_exists: |
+  SELECT 1
+  FROM information_schema.schemata
+  WHERE schema_name = $1
+table_exists: |
+  SELECT 1
+  FROM information_schema.tables
+  WHERE table_schema = $1
+    AND table_name = $2
+  LIMIT 1
+count_user_tables: |
+  SELECT count(1)
+  FROM information_schema.tables
+  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+extension_available: |
+  SELECT 1
+  FROM pg_available_extensions
+  WHERE name = $1

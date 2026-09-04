@@ -1,0 +1,124 @@
+# Matter types, KB vectors, FTS / similarity.
+# Access: get_sql("knowledge.<query_name>")
+
+fetch_active_matter_types: |
+  SELECT
+      mt.matter_type_id,
+      mt.display_name,
+      mt.required_content_types,
+      mt.high_risk_topics,
+      mt.default_disclaimer
+  FROM knowledge.matter_types mt
+  WHERE COALESCE(mt.active, TRUE) = TRUE
+  ORDER BY mt.display_name
+fetch_matter_type: |
+  SELECT
+      mt.matter_type_id,
+      mt.display_name,
+      mt.required_content_types,
+      mt.high_risk_topics,
+      mt.default_disclaimer,
+      mt.active
+  FROM knowledge.matter_types mt
+  WHERE mt.matter_type_id = $1
+  LIMIT 1
+fetch_jurisdiction: |
+  SELECT
+      kj.jurisdiction_id,
+      kj.state,
+      kj.abbreviation,
+      kj.scope,
+      kj.requires_county_configuration
+  FROM knowledge.jurisdictions kj
+  WHERE kj.jurisdiction_id = $1
+  LIMIT 1
+fetch_counties_by_jurisdiction: |
+  SELECT
+      kc.county_id,
+      kc.jurisdiction_id,
+      kc.county_name
+  FROM knowledge.counties kc
+  WHERE kc.jurisdiction_id = $1
+  ORDER BY kc.county_name
+fetch_source: |
+  SELECT
+      s.source_id,
+      s.title,
+      s.url,
+      s.authority,
+      s.last_verified
+  FROM knowledge.sources s
+  WHERE s.source_id = $1
+  LIMIT 1
+list_vectors_by_matter: |
+  SELECT
+      kv.content_id,
+      kv.content_type,
+      kv.matter_type,
+      kv.jurisdiction_id,
+      kv.state,
+      kv.county_id,
+      kv.case_variant,
+      kv.scope,
+      kv.topics,
+      kv.text AS chunk_text,
+      kv.last_verified
+  FROM knowledge.kb_vectors kv
+  WHERE kv.matter_type = $1
+  ORDER BY kv.created_at DESC NULLS LAST
+  LIMIT COALESCE($2::int, 50)
+search_vectors_fts: |
+  SELECT
+      kv.content_id,
+      kv.content_type,
+      kv.matter_type,
+      kv.jurisdiction_id,
+      kv.state,
+      kv.county_id,
+      kv.case_variant,
+      kv.topics,
+      kv.text AS chunk_text,
+      ts_rank(kv.text_search, plainto_tsquery('english', $1)) AS rank
+  FROM knowledge.kb_vectors kv
+  WHERE kv.text_search @@ plainto_tsquery('english', $1)
+    AND ($2::text IS NULL OR kv.matter_type = $2)
+    AND ($3::text IS NULL OR kv.jurisdiction_id = $3)
+    AND ($4::text IS NULL OR kv.county_id = $4)
+  ORDER BY rank DESC
+  LIMIT COALESCE($5::int, 20)
+search_vectors_similarity: |
+  SELECT
+      kv.content_id,
+      kv.content_type,
+      kv.matter_type,
+      kv.jurisdiction_id,
+      kv.state,
+      kv.county_id,
+      kv.case_variant,
+      kv.topics,
+      kv.text AS chunk_text,
+      1 - (kv.embedding <=> $1::vector) AS score
+  FROM knowledge.kb_vectors kv
+  WHERE kv.embedding IS NOT NULL
+    AND ($2::text IS NULL OR kv.matter_type = $2)
+    AND ($3::text IS NULL OR kv.jurisdiction_id = $3)
+    AND ($4::text IS NULL OR kv.county_id = $4)
+  ORDER BY kv.embedding <=> $1::vector
+  LIMIT COALESCE($5::int, 20)
+fetch_vector_with_sources: |
+  SELECT
+      kv.content_id,
+      kv.content_type,
+      kv.matter_type,
+      kv.jurisdiction_id,
+      kv.state,
+      kv.county_id,
+      kv.text AS chunk_text,
+      s.source_id,
+      s.title AS source_title,
+      s.url AS source_url,
+      s.authority
+  FROM knowledge.kb_vectors kv
+  LEFT JOIN knowledge.vector_sources vs ON vs.content_id = kv.content_id
+  LEFT JOIN knowledge.sources s ON s.source_id = vs.source_id
+  WHERE kv.content_id = $1

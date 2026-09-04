@@ -1,0 +1,98 @@
+# Users and case lists.
+# Access: get_sql("operational.<query_name>")
+
+fetch_user_by_email: |
+  SELECT
+      u.id AS user_id,
+      u.email,
+      u.session_id,
+      u.created_at
+  FROM operational.users u
+  WHERE LOWER(u.email) = LOWER($1)
+  LIMIT 1
+fetch_user_with_profile: |
+  SELECT
+      u.id AS user_id,
+      u.email,
+      u.session_id,
+      up.first_name,
+      up.middle_name,
+      up.last_name,
+      up.date_of_birth
+  FROM operational.users u
+  LEFT JOIN operational.user_profiles up ON up.user_id = u.id
+  WHERE u.id = $1
+  LIMIT 1
+list_cases_by_user: |
+  SELECT
+      c.id AS case_id,
+      c.case_number,
+      c.title,
+      c.status,
+      c.priority,
+      c.opened_at AS filing_date,
+      c.filing_deadline,
+      c.is_archived,
+      ct.name AS case_type,
+      cs.name AS sub_case_type,
+      j.code  AS jurisdiction_code,
+      s.code  AS state_code
+  FROM operational.cases c
+  INNER JOIN configuration.case_types ct ON ct.id = c.case_type_id
+  LEFT JOIN configuration.case_subtypes cs ON cs.id = c.case_subtype_id
+  INNER JOIN configuration.jurisdictions j ON j.id = c.jurisdiction_id
+  INNER JOIN configuration.states s ON s.id = c.state_id
+  WHERE c.user_id = $1
+    AND c.deleted_at IS NULL
+    AND ($2::boolean IS NULL OR c.is_archived = $2)
+  ORDER BY c.opened_at DESC NULLS LAST
+  LIMIT COALESCE($3::int, 50)
+
+# $1 user_id (uuid), $2 email, $3 auth_token, $4 session_id (external platform session)
+upsert_user_on_login: |
+  INSERT INTO operational.users (
+      id,
+      email,
+      auth_token,
+      session_id
+  )
+  VALUES (
+      $1::uuid,
+      LOWER($2),
+      $3,
+      $4
+  )
+  ON CONFLICT (email) DO UPDATE SET
+      auth_token = EXCLUDED.auth_token,
+      session_id = EXCLUDED.session_id,
+      updated_at = CURRENT_TIMESTAMP
+  RETURNING
+      id AS user_id,
+      email,
+      auth_token,
+      session_id,
+      created_at,
+      updated_at
+
+fetch_user_by_auth_token: |
+  SELECT
+      u.id AS user_id,
+      u.email,
+      u.auth_token,
+      u.session_id,
+      u.created_at,
+      u.updated_at
+  FROM operational.users u
+  WHERE u.auth_token = $1
+  LIMIT 1
+fetch_user_by_id: |
+  SELECT
+      u.id AS user_id,
+      u.email,
+      u.auth_token,
+      u.session_id,
+      u.created_at,
+      u.updated_at
+  FROM operational.users u
+  WHERE u.id = $1::uuid
+  LIMIT 1
