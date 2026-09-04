@@ -7,7 +7,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# CPU torch first so sentence-transformers does not pull CUDA (~1 GB) and crash BuildKit.
+RUN pip install --no-cache-dir --prefix=/install \
+        torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.11-slim
 
