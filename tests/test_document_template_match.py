@@ -309,3 +309,27 @@ def test_merge_questions_uses_mapping_sources_not_extra_pdf_fields():
         "CAUSE_NUMBER",
     ]
     assert merged[-1]["mapping_source"] == "CAUSE_NUMBER"
+
+
+def test_merge_envelope_mapping_asks_only_form_data_and_hides_follow_ups():
+    mapping = """
+    {
+      "id": "",
+      "state": "",
+      "jurisdiction": "",
+      "version": "",
+      "form_data": {
+        "_DRIVER_LICENSE": "",
+        "_LICENSE_NUMBER": "",
+        "$email": ""
+      }
+    }
+    """
+    merged = merge_document_and_mapping_questions([], mapping)
+    names = [row["field_name"] for row in merged]
+    assert names == ["_DRIVER_LICENSE", "_LICENSE_NUMBER"]
+    license_number = next(row for row in merged if row["field_name"] == "_LICENSE_NUMBER")
+    assert license_number["visibility_condition"] == {"_DRIVER_LICENSE": "yes"}
+    assert next(row for row in merged if row["field_name"] == "_DRIVER_LICENSE")[
+        "question_type"
+    ] == "BOOLEAN"

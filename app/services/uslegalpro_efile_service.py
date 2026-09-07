@@ -49,9 +49,15 @@ def _first_filing(selections: Dict[str, Any], generated_documents: List[Dict[str
     if generated_documents:
         row = dict(generated_documents[0])
         return {
-            "file_name": row.get("file_name") or "document.pdf",
+            "file_name": row.get("file_name") or "case_document.pdf",
             "description": row.get("template_name") or "Court Filing",
-            "file": row.get("file") or row.get("file_url") or selections.get("efile_file_url"),
+            "file": (
+                row.get("file")
+                or row.get("file_url")
+                or row.get("download_url")
+                or row.get("s3_url")
+                or selections.get("efile_file_url")
+            ),
             "size": row.get("size"),
             "doc_type": selections.get("doc_type") or selections.get("document_type_code"),
             "code": selections.get("filing_code"),

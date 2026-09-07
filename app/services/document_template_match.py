@@ -178,6 +178,76 @@ def _humanize_mapping_source(name: str) -> str:
     return cleaned[:1].upper() + cleaned[1:].lower() if cleaned else name
 
 
+_YES_NO_FIELDS = frozenset(
+    {
+        "CHILDREN",
+        "DRIVER_LICENSE",
+        "SOCIAL_SECURITY_NUMBER",
+        "LEGAL_NOTICE",
+        "PROTECTIVE_ORDER",
+        "NAME_CHANGE",
+        "DOMICILE",
+    }
+)
+_FOLLOW_UP_GATES = {
+    "DRIVER_LICENSE": (
+        "LICENSE_NUMBER",
+        "LICENSE_ISSUE_STATE",
+    ),
+    "SOCIAL_SECURITY_NUMBER": ("SOCIAL_SECURITY_NUMBER_LAST_THREE_DIGIT",),
+    "PROTECTIVE_ORDER": (
+        "PROTECTIVE_ORDER_CASE_NUMBER",
+        "PROTECTIVE_ORDER_DATE",
+        "PROTECTIVE_ORDER_COUNTY",
+        "PROTECTIVE_ORDER_STATE",
+    ),
+    "NAME_CHANGE": (
+        "NAME_CHANGE_TO_FIRST",
+        "NAME_CHANGE_TO_MIDDLE",
+        "NAME_CHANGE_TO_LAST",
+    ),
+}
+
+
+def _mapping_stem(name: str) -> str:
+    return re.sub(r"^_+", "", str(name or "")).upper()
+
+
+def attach_mapping_visibility(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hide follow-up fields until the user answers the related yes/no gate."""
+    present = {_mapping_stem(row.get("field_name") or "") for row in questions}
+    gate_fields = {
+        stem: next(
+            (
+                str(row.get("field_name") or "")
+                for row in questions
+                if _mapping_stem(row.get("field_name") or "") == stem
+            ),
+            stem,
+        )
+        for stem in _FOLLOW_UP_GATES
+        if stem in present
+    }
+    for row in questions:
+        stem = _mapping_stem(row.get("field_name") or "")
+        if stem in _YES_NO_FIELDS:
+            row["question_type"] = "BOOLEAN"
+        for gate, dependents in _FOLLOW_UP_GATES.items():
+            if stem in dependents and gate in gate_fields:
+                row["visibility_condition"] = {gate_fields[gate]: "yes"}
+        if "CHILD" in stem and stem != "CHILDREN" and "CHILDREN" in present:
+            children_field = next(
+                (
+                    str(item.get("field_name") or "")
+                    for item in questions
+                    if _mapping_stem(item.get("field_name") or "") == "CHILDREN"
+                ),
+                "CHILDREN",
+            )
+            row["visibility_condition"] = {children_field: "yes"}
+    return questions
+
+
 def merge_document_and_mapping_questions(
     document_questions: List[Dict[str, Any]],
     field_mapping: str,
@@ -242,7 +312,7 @@ def merge_document_and_mapping_questions(
                 "mapping_source": source,
             }
         )
-    return merged
+    return attach_mapping_visibility(merged)
 
 
 _CHILD_HINTS = (
@@ -357,6 +427,9 @@ def apply_known_case_answers(
         if not name:
             continue
         label = _label_text(question)
+        if skip_children and _mapping_stem(name) == "CHILDREN":
+            answers.setdefault(name, "no")
+            continue
         if skip_children and any(hint in label for hint in _CHILD_HINTS):
             skipped.append(name)
             continue

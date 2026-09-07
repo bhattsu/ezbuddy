@@ -588,13 +588,8 @@ def advance_phase_after_selections(session: FilingSession) -> None:
         ):
             sel["case_type"] = sel.get("case_type_name") or sel.get("case_type_code") or ""
             sel.setdefault("sub_case_type", "")
-            if sel.get("filing_codes_url"):
-                session.phase = FilingPhase.SELECTING_FILING_CODE
-            else:
-                session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
-        elif session.phase == FilingPhase.SELECTING_FILING_CODE and sel.get(
-            "filing_code"
-        ):
+            session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        elif session.phase == FilingPhase.SELECTING_FILING_CODE:
             session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
@@ -620,15 +615,9 @@ def advance_phase_after_selections(session: FilingSession) -> None:
 
 
 def question_visible(question: Dict[str, Any], answers: Dict[str, Any]) -> bool:
-    cond = question.get("visibility_condition")
-    if not cond:
-        return True
-    if isinstance(cond, dict):
-        for key, expected in cond.items():
-            if answers.get(key) != expected:
-                return False
-        return True
-    return True
+    from app.services.field_mapping_service import is_mapping_question_visible
+
+    return is_mapping_question_visible(question, answers)
 
 
 def apply_workflow_consolidation(

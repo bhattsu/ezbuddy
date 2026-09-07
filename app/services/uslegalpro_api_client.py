@@ -55,3 +55,14 @@ class USLegalProApiClient:
 
     async def get_credit_cards(self, customer_id: str) -> dict[str, Any]:
         return await self._client.get_credit_cards(customer_id)
+
+    async def generate_documents(
+        self, state: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        state_code = (state or "").strip().lower()
+        response = await self._client.post_json(
+            f"/ai/{state_code}/generate_documents",
+            payload,
+            include_auth=False,
+        )
+        return dict(response) if isinstance(response, dict) else {"item": response}

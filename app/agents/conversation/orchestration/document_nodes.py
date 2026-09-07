@@ -341,7 +341,10 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "The selected document template has no field_mapping, "
                     "so JSON cannot be generated."
                 )
-            from app.services.field_mapping_service import FieldMappingService
+            from app.services.field_mapping_service import (
+                FieldMappingService,
+                materialize_field_mapping,
+            )
 
             await ctx.notify("mapping_fields")
             mapping_result = await FieldMappingService(ctx.bedrock).map_fields(
@@ -351,7 +354,17 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 filled_fields=filled.fields,
             )
             mapped_fields = mapping_result.fields
-            output_fields = mapped_fields
+            request_payload = materialize_field_mapping(
+                field_mapping,
+                mapped_fields=mapped_fields,
+                selections=session.selections,
+                collected_answers=answers,
+            )
+            output_fields = (
+                request_payload.get("form_data")
+                if isinstance(request_payload.get("form_data"), dict)
+                else request_payload
+            )
             field_mapping_validation = {
                 "is_complete": mapping_result.is_complete,
                 "expected_targets": mapping_result.expected_targets,
@@ -366,6 +379,7 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "file_name": file_name,
                     "document_id": filled.document_id,
                     "fields": output_fields,
+                    "request_payload": request_payload,
                     "pdf_fields": filled.fields,
                     "mapped_fields": mapped_fields or None,
                     "field_mapping_validation": field_mapping_validation,
@@ -373,14 +387,39 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "skipped_because_uploaded": False,
                 }
             )
+            from app.services.uslegalpro_document_generation_service import (
+                GENERATED_PDF_NAME,
+                USLegalProDocumentGenerationService,
+            )
             from app.services.uslegalpro_payment_service import PAYMENT_ID_PROMPT
 
-            message = (
-                "Filing answers are complete. Here is the filled form JSON.\n\n"
-                + json.dumps(output_fields, indent=2, ensure_ascii=False)
-                + "\n\n"
-                + PAYMENT_ID_PROMPT
-            )
+            try:
+                await ctx.notify("generating_court_document")
+                rendered = await USLegalProDocumentGenerationService().generate(
+                    payload=request_payload,
+                )
+                generated[-1]["file_name"] = GENERATED_PDF_NAME
+                generated[-1]["download_url"] = rendered.download_url
+                generated[-1]["s3_url"] = rendered.download_url
+                generated[-1]["file_url"] = rendered.download_url
+                generated[-1]["file"] = rendered.download_url
+                generated[-1]["source"] = "uslegalpro_generate_documents"
+                session.selections["efile_file_url"] = rendered.download_url
+                session.selections["generated_pdf_name"] = GENERATED_PDF_NAME
+                message = (
+                    "Filing answers are complete. Your document is ready: "
+                    f"{GENERATED_PDF_NAME}\n{rendered.download_url}\n\n"
+                    + PAYMENT_ID_PROMPT
+                )
+            except Exception as api_exc:  # noqa: BLE001
+                logger.exception("US Legal Pro generate_documents failed")
+                generated[-1]["error"] = str(api_exc)
+                message = (
+                    "Filing answers are complete. Here is the filled form JSON.\n\n"
+                    + json.dumps(output_fields, indent=2, ensure_ascii=False)
+                    + f"\n\nI could not generate {GENERATED_PDF_NAME}. {api_exc}\n\n"
+                    + PAYMENT_ID_PROMPT
+                )
             session.phase = FilingPhase.VERIFYING_PLATFORM_PAYMENT
             await ctx.notify("documents_ready")
             await ctx.notify("verifying_platform_payment")

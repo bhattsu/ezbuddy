@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
 from pydantic import BaseModel, Field
@@ -46,16 +47,26 @@ _JOIN_RE = re.compile(
     re.IGNORECASE,
 )
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_YES_VALUES = frozenset({"yes", "y", "true", "1"})
+_NO_VALUES = frozenset({"no", "n", "false", "0"})
+_ENVELOPE_META_KEYS = ("id", "state", "jurisdiction", "version")
 
 
-def parse_field_mapping_entries(field_mapping: str) -> List[tuple[str, str]]:
-    """
-    Parse TARGET=EXPRESSION entries.
+@dataclass
+class FieldMappingSpec:
+    """Parsed document_templates.field_mapping (pipe list or generate_documents envelope)."""
 
-    Pipe is the canonical separator, but existing rows may use commas between
-    mappings. Commas inside join(...) are preserved.
-    """
-    text = str(field_mapping or "")
+    kind: str
+    raw: str
+    entries: List[tuple[str, str]] = field(default_factory=list)
+    envelope: Optional[Dict[str, Any]] = None
+
+    @property
+    def targets(self) -> List[str]:
+        return [target for target, _ in self.entries]
+
+
+def _parse_pipe_entries(text: str) -> List[tuple[str, str]]:
     starts = list(
         re.finditer(
             r"(?:^|[|,])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=",
@@ -73,16 +84,61 @@ def parse_field_mapping_entries(field_mapping: str) -> List[tuple[str, str]]:
     return entries
 
 
+def parse_field_mapping_spec(field_mapping: str) -> FieldMappingSpec:
+    """Parse pipe mappings or a generate_documents JSON envelope."""
+    text = str(field_mapping or "").strip()
+    if text.startswith("{") and "form_data" in text:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("form_data"), dict):
+            form_data = data["form_data"]
+            entries = [(str(key), str(key)) for key in form_data.keys()]
+            return FieldMappingSpec(
+                kind="envelope",
+                raw=text,
+                entries=entries,
+                envelope=data,
+            )
+    return FieldMappingSpec(
+        kind="pipe",
+        raw=text,
+        entries=_parse_pipe_entries(text),
+    )
+
+
+def parse_field_mapping_entries(field_mapping: str) -> List[tuple[str, str]]:
+    """
+    Parse TARGET=EXPRESSION entries.
+
+    Pipe is the canonical separator, but existing rows may use commas between
+    mappings. Commas inside join(...) are preserved. JSON envelopes use each
+    form_data key as both target and source.
+    """
+    return parse_field_mapping_spec(field_mapping).entries
+
+
 def parse_field_mapping_targets(field_mapping: str) -> List[str]:
     """Extract configured TARGET field names in their original order."""
-    return [target for target, _ in parse_field_mapping_entries(field_mapping)]
+    return parse_field_mapping_spec(field_mapping).targets
+
+
+def is_askable_mapping_source(name: str, *, kind: str = "pipe") -> bool:
+    key = str(name or "").strip()
+    if not key or key.startswith("$"):
+        return False
+    if kind == "envelope" and key.lower() in _ENVELOPE_META_KEYS:
+        return False
+    return True
 
 
 def parse_field_mapping_sources(field_mapping: str) -> List[str]:
-    """Extract source field names referenced on the right-hand side of mappings."""
+    """Extract source field names that should be asked of the user."""
+    spec = parse_field_mapping_spec(field_mapping)
     sources: List[str] = []
     seen: set[str] = set()
-    for _, expr in parse_field_mapping_entries(field_mapping):
+    for _, expr in spec.entries:
         join_match = _JOIN_RE.match(expr)
         parts = (
             [part.strip() for part in join_match.group(1).split(",")]
@@ -90,11 +146,162 @@ def parse_field_mapping_sources(field_mapping: str) -> List[str]:
             else [expr]
         )
         for part in parts:
-            if not part or not _IDENT_RE.match(part) or part in seen:
+            if not part or part in seen or not is_askable_mapping_source(part, kind=spec.kind):
+                continue
+            if spec.kind == "pipe" and not _IDENT_RE.match(part):
                 continue
             seen.add(part)
             sources.append(part)
     return sources
+
+
+def mapping_lookup_value(answers: Dict[str, Any], key: str) -> Any:
+    if key in answers:
+        return answers.get(key)
+    wanted = re.sub(r"[^a-z0-9]+", "_", str(key or "").lower()).strip("_")
+    for existing, value in (answers or {}).items():
+        if re.sub(r"[^a-z0-9]+", "_", str(existing).lower()).strip("_") == wanted:
+            return value
+    return None
+
+
+def mapping_value_matches(actual: Any, expected: Any) -> bool:
+    want = str(expected or "").strip().lower()
+    got = str(actual or "").strip().lower()
+    if want in _YES_VALUES:
+        return got in _YES_VALUES
+    if want in _NO_VALUES:
+        return got in _NO_VALUES
+    return got == want
+
+
+def is_mapping_question_visible(
+    question: Dict[str, Any], answers: Dict[str, Any]
+) -> bool:
+    cond = question.get("visibility_condition")
+    if not cond:
+        return True
+    if isinstance(cond, dict):
+        for key, expected in cond.items():
+            if not mapping_value_matches(mapping_lookup_value(answers, key), expected):
+                return False
+        return True
+    return True
+
+
+_S3_VERSION_RE = re.compile(r"/v(\d+(?:\.\d+)?)/", re.IGNORECASE)
+_DOTTED_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)", re.IGNORECASE)
+_WHOLE_VERSION_RE = re.compile(r"^v?(\d+)$", re.IGNORECASE)
+
+
+def format_generate_documents_version(*candidates: Any, s3_key: str = "") -> str:
+    """Turn a stored template version into the generate_documents version string.
+
+    Uses the first non-blank source. Integer 1 or path /v1/ becomes 1.0.
+    Does not invent a version when no source exists.
+    """
+    for value in candidates:
+        text = _stringify(value)
+        if not text:
+            continue
+        dotted = _DOTTED_VERSION_RE.match(text)
+        if dotted:
+            return f"{int(dotted.group(1))}.{dotted.group(2)}"
+        whole = _WHOLE_VERSION_RE.match(text)
+        if whole:
+            return f"{int(whole.group(1))}.0"
+        return text
+    s3_match = _S3_VERSION_RE.search(str(s3_key or ""))
+    if not s3_match:
+        return ""
+    part = s3_match.group(1)
+    return part if "." in part else f"{int(part)}.0"
+
+
+def _special_mapping_value(
+    key: str, selections: Dict[str, Any], answers: Dict[str, Any]
+) -> str:
+    if key == "$yesterday":
+        return (date.today() - timedelta(days=1)).strftime("%m/%d/%Y")
+    if key == "$email":
+        return _stringify(
+            mapping_lookup_value(answers, "$email")
+            or mapping_lookup_value(answers, "email")
+            or selections.get("email")
+            or selections.get("user_email")
+            or ""
+        )
+    return ""
+
+
+def materialize_field_mapping(
+    field_mapping: str,
+    *,
+    mapped_fields: Dict[str, Any],
+    selections: Optional[Dict[str, Any]] = None,
+    collected_answers: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return JSON with the exact field_mapping shape and filled values."""
+    spec = parse_field_mapping_spec(field_mapping)
+    selections = selections or {}
+    answers = collected_answers or {}
+    values = {
+        str(key): _stringify(value) for key, value in (mapped_fields or {}).items()
+    }
+    for target, _expr in spec.entries:
+        if target.startswith("$") and not values.get(target):
+            values[target] = _special_mapping_value(target, selections, answers)
+
+    form_data = {target: values.get(target, "") for target, _expr in spec.entries}
+    for key, value in list(form_data.items()):
+        if key.startswith("$") and not value:
+            form_data[key] = _special_mapping_value(key, selections, answers)
+
+    if spec.kind == "envelope" and isinstance(spec.envelope, dict):
+        output = json.loads(json.dumps(spec.envelope))
+        # Keep envelope keys from the stored mapping. Fill blanks from the
+        # current filing session only — never invent template ids or versions.
+        if not _stringify(output.get("id")):
+            output["id"] = (
+                _stringify(selections.get("template_code"))
+                or _stringify(selections.get("doc_type"))
+                or _stringify(selections.get("document_type_code"))
+            )
+        if not _stringify(output.get("state")):
+            output["state"] = _stringify(selections.get("state_code")).upper()
+        if not _stringify(output.get("jurisdiction")):
+            output["jurisdiction"] = _stringify(
+                selections.get("jurisdiction_code")
+            )
+        output["version"] = format_generate_documents_version(
+            output.get("version") if _stringify(output.get("version")) else None,
+            selections.get("template_version"),
+            selections.get("version"),
+            s3_key=str(selections.get("s3_key") or ""),
+        )
+        mapped_form = dict(output.get("form_data") or {})
+        for key in list(mapped_form.keys()):
+            mapped_form[key] = form_data.get(key, "") or _special_mapping_value(
+                key, selections, answers
+            )
+        output["form_data"] = mapped_form
+        return output
+
+    return {
+        "id": (
+            _stringify(selections.get("template_code"))
+            or _stringify(selections.get("doc_type"))
+            or _stringify(selections.get("document_type_code"))
+        ),
+        "state": _stringify(selections.get("state_code")).upper(),
+        "jurisdiction": _stringify(selections.get("jurisdiction_code")),
+        "version": format_generate_documents_version(
+            selections.get("template_version"),
+            selections.get("version"),
+            s3_key=str(selections.get("s3_key") or ""),
+        ),
+        "form_data": form_data,
+    }
 
 
 def find_missing_mapping_targets(

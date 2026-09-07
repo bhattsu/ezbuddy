@@ -246,6 +246,10 @@
       border-bottom-right-radius: 6px;
       box-shadow: 0 10px 24px rgba(15, 74, 61, 0.25);
     }
+    .bubble a {
+      color: var(--accent-deep, #0f4a3d);
+      font-weight: 600;
+    }
     .msg.system .bubble {
       background: transparent;
       border: 0;
@@ -859,6 +863,24 @@
         els.toasts.appendChild(toast);
       }
 
+      function addDownloadLink(label, url) {
+        if (!url) return;
+        const wrap = document.createElement("div");
+        wrap.className = "msg system";
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = label || "case_document.pdf";
+        bubble.appendChild(document.createTextNode("Download: "));
+        bubble.appendChild(link);
+        wrap.appendChild(bubble);
+        els.chat.appendChild(wrap);
+        els.chat.scrollTop = els.chat.scrollHeight;
+      }
+
       function addBubble(role, text) {
         if (role === "system") {
           const wrap = document.createElement("div");
@@ -1088,7 +1110,7 @@
           addBubble("system", JSON.stringify(payload.collected_data || {}, null, 2));
           const documents = payload.documents || [];
           documents.forEach((doc) => {
-            const label = doc.template_name || doc.template_code || doc.file_name || "document";
+            const label = doc.file_name || doc.template_name || doc.template_code || "case_document.pdf";
             if (doc.error) {
               addBubble("system", `${label}: ${doc.error}`);
               return;
@@ -1096,6 +1118,9 @@
             if (doc.skipped_because_uploaded) {
               addBubble("system", `${label}: already uploaded, not generated.`);
               return;
+            }
+            if (doc.download_url) {
+              addDownloadLink(label, doc.download_url);
             }
             if (doc.html_content) {
               addBubble("system", `Generated HTML: ${label}`);

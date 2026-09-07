@@ -144,6 +144,7 @@ class GeneratedDocumentPayload(BaseModel):
     file_name: str = ""
     html_content: Optional[str] = None
     ftl_content: Optional[str] = None
+    download_url: Optional[str] = None
     skipped_because_uploaded: bool = False
     error: Optional[str] = None
 

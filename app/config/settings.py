@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     USLEGALPRO_FIND_CUSTOMER_PATH: str = Field(default="/payment/find_customer")
     USLEGALPRO_CREDIT_CARDS_PATH: str = Field(default="/payment/credit_cards")
     USLEGALPRO_API_TIMEOUT_SECONDS: float = Field(default=30.0)
+    USLEGALPRO_DOC_GEN_TIMEOUT_SECONDS: float = Field(
+        default=180.0,
+        description="Timeout for POST /ai/{state}/generate_documents",
+    )
 
     # ============== IDP - LLM ==============
     LLM_PROVIDER: str = Field(default="bedrock")

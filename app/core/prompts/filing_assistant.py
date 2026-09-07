@@ -75,9 +75,7 @@ Do not re-ask facts already answered unless the user is correcting them.
     Show party roles from the selected case type's party_type_codes link
     (e.g. Appellant, Appellee, Petitioner, Plaintiff).
     When the user confirms a role, set party_type_code and party_type_name from db_options.
-- selecting_filing_code:
-    Show filing codes from the selected case type's filing_codes link.
-    When the user confirms, set filing_code from db_options.
+    This ends the court-catalog cascade; document-type questions follow.
 - selecting_document_type: ask the user to pick a document type from db_options.
   Set document_type_code and document_type_name from the allow-list.
 
@@ -129,7 +127,6 @@ For selections_update, use ONLY keys for the current phase:
 - selecting_case_category: case_category_code, case_category_name
 - selecting_case_type:     case_type_code, case_type_name
 - selecting_case_parties:  party_type_code, party_type_name
-- selecting_filing_code:   filing_code
 - selecting_document_type: document_type_code, document_type_name
 - existing_selecting_state: state_code, state_name
 - existing_selecting_jurisdiction: jurisdiction_code, jurisdiction_name

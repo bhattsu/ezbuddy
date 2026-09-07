@@ -338,6 +338,7 @@ async def _hydrate_template_questions(
         template_id = str(chosen.get("template_id") or chosen.get("id") or template_id)
         session.selections["template_id"] = template_id
         session.selections["field_mapping"] = chosen.get("field_mapping") or ""
+        session.selections["cached_field_mapping"] = session.selections["field_mapping"]
         if chosen.get("s3_bucket"):
             session.selections["s3_bucket"] = chosen["s3_bucket"]
         if chosen.get("s3_key"):
@@ -377,6 +378,13 @@ async def _hydrate_template_questions(
     session.selections["s3_key"] = s3_key
     if version and version.get("template_version_id"):
         session.selections["template_version_id"] = str(version["template_version_id"])
+    stored_version = None
+    if version is not None and version.get("version") not in (None, ""):
+        stored_version = version.get("version")
+    elif chosen and chosen.get("version") not in (None, ""):
+        stored_version = chosen.get("version")
+    if stored_version not in (None, ""):
+        session.selections["template_version"] = stored_version
 
     from app.api.schemas.document import FileType
     from app.services.court_form_question_service import CourtFormQuestionService
@@ -403,9 +411,16 @@ async def _hydrate_template_questions(
 
     await ctx.notify("loading_questions")
     template_questions, prefilled = template_questions_to_workflow(extracted.questions)
+    mapping_text = str(
+        session.selections.get("cached_field_mapping")
+        or session.selections.get("field_mapping")
+        or ""
+    )
+    session.selections["field_mapping"] = mapping_text
+    session.selections["cached_field_mapping"] = mapping_text
     questions = merge_document_and_mapping_questions(
         template_questions,
-        str(session.selections.get("field_mapping") or ""),
+        mapping_text,
     )
     if not questions:
         return (

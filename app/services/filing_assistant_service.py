@@ -139,6 +139,7 @@ class FilingAssistantService:
                     file_name=d.get("file_name") or "",
                     html_content=d.get("html_content"),
                     ftl_content=d.get("ftl_content"),
+                    download_url=d.get("download_url") or d.get("s3_url") or d.get("file_url"),
                     skipped_because_uploaded=bool(d.get("skipped_because_uploaded")),
                     error=d.get("error"),
                 )

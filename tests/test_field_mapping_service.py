@@ -5,7 +5,11 @@ import pytest
 from app.services.field_mapping_service import (
     FieldMappingService,
     find_missing_mapping_targets,
+    format_generate_documents_version,
+    is_mapping_question_visible,
+    materialize_field_mapping,
     parse_field_mapping_sources,
+    parse_field_mapping_spec,
     parse_field_mapping_targets,
     validate_and_complete_mapping,
 )
@@ -221,3 +225,137 @@ async def test_map_fields_uses_question_mapping_source_alias():
         filled_fields={},
     )
     assert result.fields == {"_COUNTY": "Travis"}
+
+
+ENVELOPE_MAPPING = """
+{
+  "id": "TX_DIVORCE_PETITION_WITH_CHILDREN",
+  "state": "TX",
+  "jurisdiction": "harris:dc",
+  "version": "1.0",
+  "form_data": {
+    "_PLAINTIFF_1_FULL_NAME": "",
+    "_DRIVER_LICENSE": "",
+    "_LICENSE_NUMBER": "",
+    "$email": "",
+    "$yesterday": ""
+  }
+}
+"""
+
+
+def test_parse_json_envelope_mapping():
+    spec = parse_field_mapping_spec(ENVELOPE_MAPPING)
+    assert spec.kind == "envelope"
+    assert parse_field_mapping_targets(ENVELOPE_MAPPING) == [
+        "_PLAINTIFF_1_FULL_NAME",
+        "_DRIVER_LICENSE",
+        "_LICENSE_NUMBER",
+        "$email",
+        "$yesterday",
+    ]
+    assert parse_field_mapping_sources(ENVELOPE_MAPPING) == [
+        "_PLAINTIFF_1_FULL_NAME",
+        "_DRIVER_LICENSE",
+        "_LICENSE_NUMBER",
+    ]
+
+
+def test_materialize_envelope_keeps_exact_shape():
+    output = materialize_field_mapping(
+        ENVELOPE_MAPPING,
+        mapped_fields={
+            "_PLAINTIFF_1_FULL_NAME": "John Michael Doe",
+            "_DRIVER_LICENSE": "no",
+        },
+        selections={
+            "template_code": "divorce_petition",
+            "state_code": "ca",
+            "jurisdiction_code": "other:dc",
+            "template_version": "9.9",
+            "email": "john.doe@example.com",
+        },
+        collected_answers={},
+    )
+    assert set(output.keys()) == {"id", "state", "jurisdiction", "version", "form_data"}
+    assert output["id"] == "TX_DIVORCE_PETITION_WITH_CHILDREN"
+    assert output["state"] == "TX"
+    assert output["jurisdiction"] == "harris:dc"
+    assert output["version"] == "1.0"
+    assert output["form_data"]["_PLAINTIFF_1_FULL_NAME"] == "John Michael Doe"
+    assert output["form_data"]["_DRIVER_LICENSE"] == "no"
+    assert output["form_data"]["_LICENSE_NUMBER"] == ""
+    assert output["form_data"]["$email"] == "john.doe@example.com"
+    assert output["form_data"]["$yesterday"]
+
+
+def test_materialize_empty_envelope_uses_session_not_hardcoded_values():
+    empty_mapping = """
+    {
+      "id": "",
+      "state": "",
+      "jurisdiction": "",
+      "version": "",
+      "form_data": {"_COUNTY_COURT": ""}
+    }
+    """
+    output = materialize_field_mapping(
+        empty_mapping,
+        mapped_fields={"_COUNTY_COURT": "Harris"},
+        selections={
+            "template_code": "TX_DIVORCE_PETITION_WITH_CHILDREN",
+            "state_code": "tx",
+            "jurisdiction_code": "harris:dc",
+            "template_version": "2.0",
+        },
+    )
+    assert output["id"] == "TX_DIVORCE_PETITION_WITH_CHILDREN"
+    assert output["state"] == "TX"
+    assert output["jurisdiction"] == "harris:dc"
+    assert output["version"] == "2.0"
+    assert output["form_data"] == {"_COUNTY_COURT": "Harris"}
+
+
+def test_materialize_empty_version_uses_stored_template_version():
+    empty_mapping = """
+    {
+      "id": "TX_DIVORCE_PETITION_WITH_CHILDREN",
+      "state": "TX",
+      "jurisdiction": "harris:dc",
+      "version": "",
+      "form_data": {"_COUNTY_COURT": ""}
+    }
+    """
+    output = materialize_field_mapping(
+        empty_mapping,
+        mapped_fields={"_COUNTY_COURT": "Harris"},
+        selections={
+            "template_version": 1,
+            "s3_key": (
+                "documents-repo/templates/TX/TX-TRAVIS-DISTRICT/"
+                "TX_DIVORCE_PETITION_WITH_CHILDREN/v1/petition.pdf"
+            ),
+        },
+    )
+    assert output["version"] == "1.0"
+
+
+def test_format_generate_documents_version_from_sources():
+    assert format_generate_documents_version("1.0") == "1.0"
+    assert format_generate_documents_version(1) == "1.0"
+    assert format_generate_documents_version("v1") == "1.0"
+    assert format_generate_documents_version(
+        "",
+        s3_key="templates/TX/TX_DIVORCE_PETITION_WITH_CHILDREN/v1/file.pdf",
+    ) == "1.0"
+    assert format_generate_documents_version("", s3_key="") == ""
+
+
+def test_follow_up_visibility_uses_yes_no_answers():
+    question = {
+        "field_name": "_LICENSE_NUMBER",
+        "visibility_condition": {"_DRIVER_LICENSE": "yes"},
+    }
+    assert is_mapping_question_visible(question, {"_DRIVER_LICENSE": "no"}) is False
+    assert is_mapping_question_visible(question, {"_DRIVER_LICENSE": "Yes"}) is True
+    assert is_mapping_question_visible(question, {}) is False
