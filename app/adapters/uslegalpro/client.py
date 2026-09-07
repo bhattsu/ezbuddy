@@ -124,6 +124,41 @@ class USLegalProClient:
         response = await self.get_json(f"/v2/{state_code}/payment_accounts")
         return dict(response) if isinstance(response, dict) else {"items": response or []}
 
+    async def submit_efile(self, state: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        POST /v2/{state}/efile
+
+        Submits an e-filing envelope payload using the authenticated user's token.
+        """
+        state_code = (state or "ca").strip().lower()
+        response = await self.post_json(
+            f"/v2/{state_code}/efile",
+            payload,
+            include_auth=True,
+        )
+        return dict(response) if isinstance(response, dict) else {"item": response}
+
+    async def get_envelope(
+        self,
+        state: str,
+        envelope_id: str,
+        *,
+        fields: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        GET /v2/{state}/envelope/{envelope_id}[?fields=...]
+
+        Returns envelope status/details for a previously submitted filing.
+        """
+        state_code = (state or "ca").strip().lower()
+        clean_id = str(envelope_id or "").strip()
+        if not clean_id:
+            return {}
+        path = f"/v2/{state_code}/envelope/{clean_id}"
+        params = {"fields": fields} if fields else None
+        response = await self.get_json(path, params=params)
+        return dict(response) if isinstance(response, dict) else {"item": response}
+
     async def find_customer(self, customer_id: str) -> dict[str, Any]:
         """POST {payment_domain}/payment/find_customer with ``[{"id": customer_id}]``."""
         response = await self.post_json(

@@ -135,3 +135,46 @@ fetch_submission_by_reference: |
   FROM workflow.jurisdiction_submissions js
   WHERE js.reference_number = $1
   LIMIT 1
+insert_submission: |
+  INSERT INTO workflow.jurisdiction_submissions (
+      session_id,
+      provider_id,
+      reference_number,
+      submission_status,
+      response_message,
+      submitted_at,
+      response_received_at
+  )
+  VALUES (
+      $1::uuid,
+      $2::uuid,
+      $3,
+      $4,
+      $5,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+  )
+  RETURNING
+      id AS submission_id,
+      session_id,
+      provider_id,
+      reference_number,
+      submission_status,
+      response_message,
+      submitted_at,
+      response_received_at
+update_submission_status: |
+  UPDATE workflow.jurisdiction_submissions
+  SET submission_status = $2,
+      response_message = $3,
+      response_received_at = CURRENT_TIMESTAMP
+  WHERE id = $1::uuid
+  RETURNING
+      id AS submission_id,
+      session_id,
+      provider_id,
+      reference_number,
+      submission_status,
+      response_message,
+      submitted_at,
+      response_received_at

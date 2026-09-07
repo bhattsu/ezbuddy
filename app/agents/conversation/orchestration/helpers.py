@@ -454,6 +454,11 @@ async def load_db_options(
                 selections.get("case_type_code"),
             )
         return []
+    if phase == FilingPhase.SELECTING_FILING_CODE:
+        url = selections.get("filing_codes_url")
+        if codes_service and url:
+            return await codes_service.fetch_by_url(str(url))
+        return []
     if phase == FilingPhase.SELECTING_DOCUMENT_TYPE:
         templates = await filing_repo.list_active_document_templates()
         return match_document_templates(templates, selections)
@@ -583,6 +588,13 @@ def advance_phase_after_selections(session: FilingSession) -> None:
         ):
             sel["case_type"] = sel.get("case_type_name") or sel.get("case_type_code") or ""
             sel.setdefault("sub_case_type", "")
+            if sel.get("filing_codes_url"):
+                session.phase = FilingPhase.SELECTING_FILING_CODE
+            else:
+                session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        elif session.phase == FilingPhase.SELECTING_FILING_CODE and sel.get(
+            "filing_code"
+        ):
             session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"

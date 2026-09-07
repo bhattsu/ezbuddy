@@ -35,6 +35,18 @@ class USLegalProApiClient:
     async def get_payment_accounts(self, state: str) -> dict[str, Any]:
         return await self._client.get_payment_accounts(state)
 
+    async def submit_efile(self, state: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._client.submit_efile(state, payload)
+
+    async def get_envelope(
+        self,
+        state: str,
+        envelope_id: str,
+        *,
+        fields: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._client.get_envelope(state, envelope_id, fields=fields)
+
     async def authenticate(self, state: str, username: str, password: str) -> dict[str, Any]:
         return await self._client.authenticate(state, username, password)
 

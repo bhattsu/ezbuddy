@@ -18,6 +18,8 @@ def test_build_notification_uses_process_copy():
 
     loading = build_notification("loading_questions")
     assert "loading the questions" in loading["message"].lower()
+    submit = build_notification("submitting_efile")
+    assert "submitting" in submit["message"].lower()
 
 
 def test_loading_process_for_phase():

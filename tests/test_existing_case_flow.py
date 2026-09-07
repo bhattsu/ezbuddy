@@ -48,6 +48,26 @@ def test_existing_jurisdiction_stores_code_from_selected_name():
     assert session.selections["jurisdiction_name"] == "Refugio County - District Clerk"
 
 
+def test_new_case_moves_through_filing_code_phase_when_available():
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_CASE_PARTIES,
+        selections={
+            "party_type_code": "53024",
+            "case_type_name": "Divorce",
+            "filing_codes_url": "https://example.com/filing_codes",
+        },
+    )
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_FILING_CODE
+
+    session.selections["filing_code"] = "209523"
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
+
+
 AUTH_TOKEN = "3f1b6c1e-6b4a-4f5e-9a2a-2f5c6a7b8c9d/GENS99/8a7b6c5d-4e3f-4a2b-9c8d-1e2f3a4b5c6d"
 
 

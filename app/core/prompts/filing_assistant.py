@@ -75,7 +75,9 @@ Do not re-ask facts already answered unless the user is correcting them.
     Show party roles from the selected case type's party_type_codes link
     (e.g. Appellant, Appellee, Petitioner, Plaintiff).
     When the user confirms a role, set party_type_code and party_type_name from db_options.
-    This ends the catalog selection cascade; document-type questions follow.
+- selecting_filing_code:
+    Show filing codes from the selected case type's filing_codes link.
+    When the user confirms, set filing_code from db_options.
 - selecting_document_type: ask the user to pick a document type from db_options.
   Set document_type_code and document_type_name from the allow-list.
 
@@ -95,6 +97,13 @@ Do not re-ask facts already answered unless the user is correcting them.
   document type from db_options. Set document_type_code from the allow-list.
 - existing_search_party / existing_search_date: use db_options results only.
 
+### Filing status checks
+- If the user asks for filing status, envelope status, or "is my filing accepted",
+  set lookup_action to "check_status".
+- If the user includes an envelope id in the message, place it in
+  lookup_params.envelope_id.
+- Keep the assistant_message brief and professional.
+
 ### Generic legal
 - generic_legal: keep assistant_message brief; court-rules retrieval may replace it.
 
@@ -112,7 +121,7 @@ Respond with JSON only (no markdown fences):
   "phase_complete": false
 }}
 
-lookup_action may be: null, "party_search", "date_search", "case_number", "confirm_case"
+lookup_action may be: null, "party_search", "date_search", "case_number", "confirm_case", "check_status"
 
 For selections_update, use ONLY keys for the current phase:
 - selecting_state:         state_code, state_name
@@ -120,6 +129,7 @@ For selections_update, use ONLY keys for the current phase:
 - selecting_case_category: case_category_code, case_category_name
 - selecting_case_type:     case_type_code, case_type_name
 - selecting_case_parties:  party_type_code, party_type_name
+- selecting_filing_code:   filing_code
 - selecting_document_type: document_type_code, document_type_name
 - existing_selecting_state: state_code, state_name
 - existing_selecting_jurisdiction: jurisdiction_code, jurisdiction_name

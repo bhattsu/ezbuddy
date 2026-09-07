@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from app.agents.conversation.orchestration.context import FilingOrchestratorContext
 from app.agents.conversation.orchestration.helpers import (
@@ -209,16 +209,51 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
 
     session.selections["court_payment_account_id"] = chosen.get("id")
     session.selections["court_payment_account"] = chosen
+    await ctx.notify("submitting_efile")
+    submit_result = await _submit_efile_after_payment(ctx, session)
+    if submit_result is None:
+        result = result_from_session(
+            session,
+            "I verified your payment account, but I could not submit the filing yet. "
+            "Please review the filing details and try again.",
+            event_kind="payment.court",
+            metadata={"court_payment_account": chosen},
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
+    session.selections["reference_id"] = submit_result.reference_id
+    session.selections["envelope_id"] = submit_result.envelope_id
+    session.selections["efile_submit_status"] = submit_result.status
+    session.selections["efile_submit_message"] = submit_result.message
     session.phase = FilingPhase.COMPLETE
     await ctx.conversation_repo.complete_conversation(session.conversation_id)
     await persist_system_state(ctx.conversation_repo, session)
+    envelope_line = (
+        f" Envelope ID: {submit_result.envelope_id}."
+        if submit_result.envelope_id
+        else ""
+    )
+    reference_line = (
+        f" Reference ID: {submit_result.reference_id}."
+        if submit_result.reference_id
+        else ""
+    )
     result = result_from_session(
         session,
-        COURT_ACCOUNT_THANKS,
+        COURT_ACCOUNT_THANKS + envelope_line + reference_line,
         event_kind="documents.ready",
         metadata={
             "generated_documents": session.generated_documents,
             "court_payment_account": chosen,
+            "envelope_id": submit_result.envelope_id,
+            "reference_id": submit_result.reference_id,
+            "efile_submit_status": submit_result.status,
         },
     )
     return {
@@ -227,3 +262,46 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
         "result": result,
         "next_node": "persist",
     }
+
+
+async def _submit_efile_after_payment(ctx, session) -> Optional[Any]:
+    try:
+        submitted = await ctx.efile_service.submit(
+            user_id=session.user_id,
+            mode=session.mode.value,
+            selections=session.selections,
+            collected_answers=session.collected_answers,
+            generated_documents=session.generated_documents,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("E-file submission failed")
+        session.selections["efile_submit_error"] = str(exc)
+        return None
+
+    conv = await ctx.conversation_repo.get_conversation(session.conversation_id)
+    session_id = str((conv or {}).get("session_id") or "").strip()
+    provider_id = (
+        str(session.selections.get("efile_provider_id") or "").strip()
+        or await ctx.submission_repo.resolve_provider_id(("EFILE", "COURT_EFILE", "TYLER"))
+        or ""
+    )
+    if provider_id:
+        session.selections["efile_provider_id"] = provider_id
+
+    if session_id and provider_id:
+        record = await ctx.submission_repo.insert_submission(
+            session_id=session_id,
+            provider_id=provider_id,
+            reference_number=submitted.reference_id,
+            submission_status=submitted.status,
+            response_message={
+                "envelope_id": submitted.envelope_id,
+                "status": submitted.status,
+                "message": submitted.message,
+                "raw": submitted.raw,
+            },
+        )
+        if record:
+            session.selections["submission_id"] = str(record.get("submission_id") or "")
+
+    return submitted
