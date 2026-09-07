@@ -15,6 +15,7 @@ GENERATED_PDF_NAME = "case_document.pdf"
 
 _URL_KEYS = (
     "download_url",
+    "s3",
     "s3_url",
     "s3_link",
     "file_url",

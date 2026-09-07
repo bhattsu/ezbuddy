@@ -43,6 +43,23 @@ def test_extract_document_url_from_common_shapes():
     assert extract_document_url({"message": "ok"}) == ""
 
 
+def test_extract_document_url_from_items_s3_field():
+    url = (
+        "https://ezstage.s3.us-east-2.amazonaws.com/6dae2fbd-1fd5-4968-aa9d-1529252035cd"
+        "?response-content-disposition=attachment%3B%20filename%3Ddivorce_petition.pdf"
+    )
+    assert extract_document_url(
+        {
+            "items": [
+                {
+                    "id": "divorce_petition",
+                    "s3": url,
+                }
+            ]
+        }
+    ) == url
+
+
 def test_generated_pdf_name():
     assert GENERATED_PDF_NAME == "case_document.pdf"
 
