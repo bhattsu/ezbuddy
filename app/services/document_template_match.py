@@ -215,28 +215,24 @@ def merge_document_and_mapping_questions(
         )
 
     for index, source in enumerate(sources, start=1):
+        if source in used:
+            continue
+        used.add(source)
         match_idx = next(
             (idx for idx, row in enumerate(leftover) if _matches(row, source)),
             None,
         )
         if match_idx is not None:
-            row = leftover.pop(match_idx)
-            field_name = str(row.get("field_name") or source)
-            if field_name in used:
-                continue
-            used.add(field_name)
-            row = dict(row)
+            row = dict(leftover.pop(match_idx))
+            row["field_name"] = source
             row.setdefault("pdf_field", source)
             row["mapping_source"] = source
+            row["sort_order"] = index
             merged.append(row)
             continue
-        field_name = re.sub(r"[^a-z0-9]+", "_", source.lower()).strip("_") or f"field_{index}"
-        if field_name in used:
-            continue
-        used.add(field_name)
         merged.append(
             {
-                "field_name": field_name,
+                "field_name": source,
                 "field_label": _humanize_mapping_source(source),
                 "pdf_field": source,
                 "question": _humanize_mapping_source(source),

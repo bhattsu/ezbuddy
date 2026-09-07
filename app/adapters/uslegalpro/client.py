@@ -7,7 +7,6 @@ from typing import Any
 
 import httpx
 
-from app.adapters.uslegalpro.tokens import parse_auth_token
 from app.config.settings import settings
 from app.core.ingestion.excel.api_options_config import normalize_api_endpoint
 
@@ -23,6 +22,17 @@ class USLegalProApiError(httpx.HTTPStatusError):
 
     def __init__(self, message: str, *, request: httpx.Request, response: httpx.Response):
         super().__init__(message, request=request, response=response)
+
+
+def extract_auth_token(payload: dict[str, Any]) -> str:
+    item = payload.get("item") or {}
+    nested = payload.get("data") or {}
+    token = ""
+    if isinstance(item, dict):
+        token = str(item.get("auth_token") or "").strip()
+    if not token and isinstance(nested, dict):
+        token = str(nested.get("auth_token") or "").strip()
+    return token
 
 
 def _api_error_message(response: httpx.Response) -> str:
@@ -98,8 +108,7 @@ class USLegalProClient:
                 f"Authentication rejected (message_code={message_code})"
             )
 
-        item = data.get("item") or {}
-        auth_token = item.get("auth_token")
+        auth_token = extract_auth_token(data)
         if not auth_token:
             raise USLegalProAuthError("Authentication response missing auth_token")
 
@@ -114,6 +123,58 @@ class USLegalProClient:
         state_code = (state or "ca").strip().lower()
         response = await self.get_json(f"/v2/{state_code}/payment_accounts")
         return dict(response) if isinstance(response, dict) else {"items": response or []}
+
+    async def find_customer(self, customer_id: str) -> dict[str, Any]:
+        """POST {payment_domain}/payment/find_customer with ``[{"id": customer_id}]``."""
+        response = await self.post_json(
+            settings.USLEGALPRO_FIND_CUSTOMER_PATH,
+            [{"id": customer_id}],
+            include_auth=False,
+        )
+        return dict(response) if isinstance(response, dict) else {"item": response}
+
+    async def get_credit_cards(self, customer_id: str) -> dict[str, Any]:
+        """POST {payment_domain}/payment/credit_cards with ``[customer_id]``."""
+        response = await self.post_json(
+            settings.USLEGALPRO_CREDIT_CARDS_PATH,
+            [customer_id],
+            include_auth=False,
+        )
+        return dict(response) if isinstance(response, dict) else {"items": response or []}
+
+    async def post_json(
+        self,
+        path: str,
+        payload: Any,
+        *,
+        include_auth: bool = True,
+    ) -> Any:
+        raw = path.strip()
+        if raw.startswith("http://") or raw.startswith("https://"):
+            url = raw
+        else:
+            normalized = normalize_api_endpoint(raw)
+            url = f"{self.base_url}{normalized}"
+
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                url,
+                headers=self._headers(include_auth=include_auth),
+                json=payload,
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "US Legal Pro API POST error status=%s url=%s body=%s",
+                    response.status_code,
+                    url,
+                    response.text[:500],
+                )
+                raise USLegalProApiError(
+                    _api_error_message(response),
+                    request=response.request,
+                    response=response,
+                )
+            return response.json()
 
     async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         raw = path.strip()

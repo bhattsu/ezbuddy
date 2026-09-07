@@ -34,3 +34,12 @@ class USLegalProApiClient:
 
     async def get_payment_accounts(self, state: str) -> dict[str, Any]:
         return await self._client.get_payment_accounts(state)
+
+    async def authenticate(self, state: str, username: str, password: str) -> dict[str, Any]:
+        return await self._client.authenticate(state, username, password)
+
+    async def find_customer(self, customer_id: str) -> dict[str, Any]:
+        return await self._client.find_customer(customer_id)
+
+    async def get_credit_cards(self, customer_id: str) -> dict[str, Any]:
+        return await self._client.get_credit_cards(customer_id)

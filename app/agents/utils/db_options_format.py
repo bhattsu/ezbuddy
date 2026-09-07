@@ -23,6 +23,7 @@ DROPDOWN_PHASES = frozenset(
         "selecting_document_type",
         "existing_search_party",
         "existing_search_date",
+        "verifying_court_payment",
     }
 )
 
@@ -39,6 +40,7 @@ _PHASE_NOUNS = {
     "selecting_document_type": "document type",
     "existing_search_party": "party",
     "existing_search_date": "case",
+    "verifying_court_payment": "payment account",
 }
 
 
@@ -58,7 +60,8 @@ def compact_db_options(
 
 def _label(row: Dict[str, Any]) -> str:
     return str(
-        row.get("name")
+        row.get("label")
+        or row.get("name")
         or row.get("state_name")
         or row.get("county_name")
         or row.get("jurisdiction_name")
@@ -134,6 +137,10 @@ def match_option(
         "doc_type",
         "document_type_code",
         "case_type",
+        "id",
+        "last4_digit",
+        "card_type",
+        "label",
     )
     for row in options:
         if any(_normalize(row.get(field)) == needle for field in fields):
@@ -163,6 +170,7 @@ def selection_update_for_option(
         "selecting_case_parties": "party_type_code",
         "selecting_filing_code": "filing_code",
         "selecting_document_type": "document_type_code",
+        "verifying_court_payment": "court_payment_account_id",
     }
     key = keys.get(str(phase).lower())
     if not key:

@@ -24,12 +24,17 @@ def route_entry(state: FilingGraphState) -> Literal["connect", "message_prepare"
 
 def route_after_message_prepare(
     state: FilingGraphState,
-) -> Literal["offer_documents", "workflow", "navigation"]:
+) -> Literal["offer_documents", "workflow", "verify_payment", "navigation"]:
     phase = state.get("phase") or ""
     if phase in _OFFER_PHASES:
         return "offer_documents"
     if phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS.value:
         return "workflow"
+    if phase in {
+        FilingPhase.VERIFYING_PLATFORM_PAYMENT.value,
+        FilingPhase.VERIFYING_COURT_PAYMENT.value,
+    }:
+        return "verify_payment"
     return "navigation"
 
 

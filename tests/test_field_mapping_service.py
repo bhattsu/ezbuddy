@@ -5,6 +5,7 @@ import pytest
 from app.services.field_mapping_service import (
     FieldMappingService,
     find_missing_mapping_targets,
+    parse_field_mapping_sources,
     parse_field_mapping_targets,
     validate_and_complete_mapping,
 )
@@ -18,6 +19,28 @@ def test_parse_field_mapping_targets():
         "_FULL_NAME",
         "_SPOUSE",
         "_COUNTY",
+    ]
+
+
+def test_parse_field_mapping_supports_legacy_comma_separators():
+    mapping = (
+        "_COUNTY_COURT=JURISDICTION, _DRIVER_LICENSE=DRIVER_LICENSE, "
+        '_FULL_NAME=join(" ", FIRST_NAME, MIDDLE_NAME, LAST_NAME)|'
+        "_PHONE=PHONE_NUMBER"
+    )
+    assert parse_field_mapping_targets(mapping) == [
+        "_COUNTY_COURT",
+        "_DRIVER_LICENSE",
+        "_FULL_NAME",
+        "_PHONE",
+    ]
+    assert parse_field_mapping_sources(mapping) == [
+        "JURISDICTION",
+        "DRIVER_LICENSE",
+        "FIRST_NAME",
+        "MIDDLE_NAME",
+        "LAST_NAME",
+        "PHONE_NUMBER",
     ]
 
 
@@ -115,7 +138,8 @@ async def test_map_fields_uses_llm_output():
         filled_fields={"Petitioner Name": "Jane Doe"},
     )
     assert result.is_complete is True
-    assert result.fields["_FULL_NAME"] == "Jane Doe"
+    # Explicit SOURCE mappings are authoritative over conflicting LLM output.
+    assert result.fields["_FULL_NAME"] == "Jane"
     assert result.fields["_COUNTY"] == "Travis"
     assert "_EXTRA" not in result.fields
     assert set(result.fields) == {"_FULL_NAME", "_COUNTY"}
@@ -174,3 +198,26 @@ async def test_map_fields_falls_back_when_llm_fails():
     assert result.fields["_FULL_NAME"] == "Jane Doe"
     assert result.fields["_COUNTY"] == "Travis"
     assert set(result.fields.keys()) == {"_FULL_NAME", "_COUNTY"}
+
+
+@pytest.mark.asyncio
+async def test_map_fields_uses_question_mapping_source_alias():
+    class _Bedrock:
+        async def invoke_structured_prompt(self, prompt, schema):
+            raise RuntimeError("bedrock down")
+
+        async def invoke_prompt_with_timeout(self, body):
+            raise RuntimeError("bedrock down")
+
+    result = await FieldMappingService(bedrock=_Bedrock()).map_fields(
+        field_mapping="_COUNTY=JURISDICTION",
+        workflow_questions=[
+            {
+                "field_name": "county_question",
+                "mapping_source": "JURISDICTION",
+            }
+        ],
+        collected_answers={"county_question": "Travis"},
+        filled_fields={},
+    )
+    assert result.fields == {"_COUNTY": "Travis"}

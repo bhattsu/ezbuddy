@@ -56,6 +56,18 @@ def test_route_after_message_prepare_offer_and_workflow():
         == "workflow"
     )
     assert (
+        route_after_message_prepare(
+            {"phase": FilingPhase.VERIFYING_PLATFORM_PAYMENT.value}
+        )
+        == "verify_payment"
+    )
+    assert (
+        route_after_message_prepare(
+            {"phase": FilingPhase.VERIFYING_COURT_PAYMENT.value}
+        )
+        == "verify_payment"
+    )
+    assert (
         route_after_message_prepare({"phase": FilingPhase.SELECTING_STATE.value})
         == "navigation"
     )
@@ -221,6 +233,7 @@ def test_build_filing_graph_has_unified_nodes():
         "offer_documents",
         "analyze_and_prefill",
         "generate_documents",
+        "verify_payment",
         "workflow",
         "persist",
     ):

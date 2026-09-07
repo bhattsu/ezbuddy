@@ -48,30 +48,41 @@ _JOIN_RE = re.compile(
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def parse_field_mapping_entries(field_mapping: str) -> List[tuple[str, str]]:
+    """
+    Parse TARGET=EXPRESSION entries.
+
+    Pipe is the canonical separator, but existing rows may use commas between
+    mappings. Commas inside join(...) are preserved.
+    """
+    text = str(field_mapping or "")
+    starts = list(
+        re.finditer(
+            r"(?:^|[|,])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=",
+            text,
+        )
+    )
+    entries: List[tuple[str, str]] = []
+    for index, match in enumerate(starts):
+        expression_start = match.end()
+        expression_end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        expression = text[expression_start:expression_end].strip().rstrip("|,").strip()
+        target = match.group(1).strip()
+        if target and expression:
+            entries.append((target, expression))
+    return entries
+
+
 def parse_field_mapping_targets(field_mapping: str) -> List[str]:
-    """Extract TARGET field names from a pipe-separated field_mapping string."""
-    targets: List[str] = []
-    for segment in str(field_mapping or "").split("|"):
-        piece = segment.strip()
-        if not piece or "=" not in piece:
-            continue
-        target, _ = piece.split("=", 1)
-        target = target.strip()
-        if target:
-            targets.append(target)
-    return targets
+    """Extract configured TARGET field names in their original order."""
+    return [target for target, _ in parse_field_mapping_entries(field_mapping)]
 
 
 def parse_field_mapping_sources(field_mapping: str) -> List[str]:
     """Extract source field names referenced on the right-hand side of mappings."""
     sources: List[str] = []
     seen: set[str] = set()
-    for segment in str(field_mapping or "").split("|"):
-        piece = segment.strip()
-        if not piece or "=" not in piece:
-            continue
-        _, expr = piece.split("=", 1)
-        expr = expr.strip()
+    for _, expr in parse_field_mapping_entries(field_mapping):
         join_match = _JOIN_RE.match(expr)
         parts = (
             [part.strip() for part in join_match.group(1).split(",")]
@@ -114,11 +125,14 @@ def validate_and_complete_mapping(
         elif not llm_value:
             missing_from_llm.append(target)
 
-        if llm_value:
-            result[target] = llm_value
-        elif fallback_value:
+        # Explicit direct/join mappings are deterministic. Prefer their value
+        # over LLM output so a user's response cannot be rewritten.
+        if fallback_value:
             result[target] = fallback_value
-            backfilled.append(target)
+            if not llm_value:
+                backfilled.append(target)
+        elif llm_value:
+            result[target] = llm_value
         else:
             result[target] = llm_value
 
@@ -178,21 +192,46 @@ class FieldMappingService:
         if not mapping:
             return FieldMappingResult()
 
+        questions = list(workflow_questions or [])
         targets = parse_field_mapping_targets(mapping)
+        answers_with_aliases = dict(collected_answers or {})
+        for question in questions:
+            if isinstance(question, dict):
+                field_name = str(question.get("field_name") or "").strip()
+                aliases = (
+                    question.get("mapping_source"),
+                    question.get("pdf_field"),
+                    question.get("field"),
+                )
+            else:
+                field_name = str(getattr(question, "field_name", "") or "").strip()
+                aliases = (
+                    getattr(question, "mapping_source", None),
+                    getattr(question, "pdf_field", None),
+                    getattr(question, "field", None),
+                )
+            value = answers_with_aliases.get(field_name)
+            if value in (None, ""):
+                continue
+            for alias in aliases:
+                alias_name = str(alias or "").strip()
+                if alias_name:
+                    answers_with_aliases.setdefault(alias_name, value)
+
         prompt = format_llm_prompt(
             FIELD_MAPPING_PROMPT,
             field_mapping=mapping[:20000],
             workflow_questions_json=json.dumps(
-                list(workflow_questions or []), default=str
+                questions, default=str
             )[:20000],
             collected_answers_json=json.dumps(
-                collected_answers or {}, default=str
+                answers_with_aliases, default=str
             )[:20000],
             filled_json=json.dumps(filled_fields or {}, default=str)[:20000],
         )
 
         fallback = self._deterministic_fallback(
-            mapping, collected_answers, filled_fields
+            mapping, answers_with_aliases, filled_fields
         )
         llm_fields = await self._ask_llm(prompt)
         if not llm_fields:
@@ -271,15 +310,7 @@ class FieldMappingService:
             for k, v in pool.items()
         }
         result: Dict[str, str] = {}
-        for segment in field_mapping.split("|"):
-            piece = segment.strip()
-            if not piece or "=" not in piece:
-                continue
-            target, source_expr = piece.split("=", 1)
-            target = target.strip()
-            source_expr = source_expr.strip()
-            if not target:
-                continue
+        for target, source_expr in parse_field_mapping_entries(field_mapping):
             join_match = re.match(
                 r'join\s*\(\s*"([^"]*)"\s*,\s*(.+)\)\s*$',
                 source_expr,

@@ -46,6 +46,7 @@ from app.agents.conversation.orchestration.state import (
     OrchestratorResult,
 )
 from app.agents.conversation.orchestration.document_nodes import build_document_nodes
+from app.agents.conversation.orchestration.payment_nodes import build_payment_nodes
 from app.agents.utils.db_options_format import (
     build_phase_selection_message,
     filter_selections_update,
@@ -249,6 +250,12 @@ async def _hydrate_template_questions(
             "I could not match that document type to a template. "
             "Please choose one of the listed document types."
         )
+    if not str(session.selections.get("field_mapping") or "").strip():
+        return (
+            "The selected document template has no field_mapping, "
+            "so I cannot ask only the related questions. "
+            "Please choose a different document type."
+        )
 
     version = await ctx.filing_repo.get_latest_template_version(str(template_id))
     s3_bucket = str(
@@ -306,7 +313,18 @@ async def _hydrate_template_questions(
 
     session.workflow_questions = questions
     session.checklist = build_checklist_from_questions(None, questions)
-    session.collected_answers.update(prefilled)
+    remapped_prefill = {}
+    for question in questions:
+        name = str(question.get("field_name") or "")
+        if not name:
+            continue
+        if name in prefilled:
+            remapped_prefill[name] = prefilled[name]
+            continue
+        slug = name.lower().replace("-", "_")
+        if slug in prefilled:
+            remapped_prefill[name] = prefilled[slug]
+    session.collected_answers.update(remapped_prefill)
     known_answers, skipped_fields = apply_known_case_answers(
         questions, session.selections
     )
@@ -1255,4 +1273,5 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         "workflow": workflow_node,
         "persist": persist_node,
         **build_document_nodes(ctx),
+        **build_payment_nodes(ctx),
     }

@@ -303,5 +303,9 @@ def test_merge_questions_uses_mapping_sources_not_extra_pdf_fields():
     labels = [row["field_label"] for row in merged]
     assert "random_pdf_box" not in names
     assert "What is the cause number?" in labels
-    assert "plaintiff_1_first_name" in names
-    assert "plaintiff_1_last_name" in names
+    assert names == [
+        "PLAINTIFF_1_FIRST_NAME",
+        "PLAINTIFF_1_LAST_NAME",
+        "CAUSE_NUMBER",
+    ]
+    assert merged[-1]["mapping_source"] == "CAUSE_NUMBER"

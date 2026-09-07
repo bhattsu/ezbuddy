@@ -460,6 +460,8 @@ async def load_db_options(
     if phase == FilingPhase.EXISTING_CASE_CONFIRM:
         case = selections.get("case_metadata")
         return [case] if case else []
+    if phase == FilingPhase.VERIFYING_COURT_PAYMENT:
+        return list(selections.get("court_payment_accounts") or [])
     if phase in (FilingPhase.EXISTING_SEARCH_PARTY, FilingPhase.EXISTING_SEARCH_DATE):
         return list(selections.get("search_results") or [])
     return []
@@ -801,6 +803,8 @@ def result_from_session(
         FilingPhase.AWAITING_DOCUMENT_UPLOAD,
         FilingPhase.COLLECTING_WORKFLOW_ANSWERS,
         FilingPhase.GENERATING_DOCUMENTS,
+        FilingPhase.VERIFYING_PLATFORM_PAYMENT,
+        FilingPhase.VERIFYING_COURT_PAYMENT,
         FilingPhase.COMPLETE,
     )
     checklist = (
