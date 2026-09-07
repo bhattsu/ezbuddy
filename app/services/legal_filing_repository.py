@@ -75,6 +75,9 @@ SQL_FETCH_ACTIVE_DOCUMENT_TEMPLATES = get_sql(
 SQL_FETCH_LATEST_TEMPLATE_VERSION = get_sql(
     "legal_filing.fetch_latest_template_version"
 )
+SQL_FETCH_DOCUMENT_TEMPLATE_BY_ID = get_sql(
+    "legal_filing.fetch_document_template_by_id"
+)
 SQL_FETCH_JURISDICTION_API_DATA = get_sql(
     "legal_filing.fetch_jurisdiction_api_data_by_state"
 )
@@ -397,6 +400,15 @@ class LegalFilingRepository:
         self, template_id: str
     ) -> Optional[Dict[str, Any]]:
         rows = await self._safe_fetch(SQL_FETCH_LATEST_TEMPLATE_VERSION, template_id)
+        return dict(rows[0]) if rows else None
+
+    async def get_document_template_by_id(
+        self, template_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Load document_templates.field_mapping and version metadata for generation."""
+        if not str(template_id or "").strip():
+            return None
+        rows = await self._safe_fetch(SQL_FETCH_DOCUMENT_TEMPLATE_BY_ID, template_id)
         return dict(rows[0]) if rows else None
 
     async def list_jurisdiction_api_state_codes(self) -> List[str]:

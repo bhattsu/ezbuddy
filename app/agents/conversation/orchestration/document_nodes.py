@@ -54,6 +54,39 @@ def _resolve_field_mapping(session: FilingSession) -> str:
     return ""
 
 
+async def _load_field_mapping_from_db(
+    ctx: FilingOrchestratorContext, session: FilingSession
+) -> str:
+    """Reload field_mapping from configuration.document_templates before generation."""
+    template_id = str(session.selections.get("template_id") or "").strip()
+    if not template_id:
+        return _resolve_field_mapping(session)
+
+    row = await ctx.filing_repo.get_document_template_by_id(template_id)
+    if not row:
+        return _resolve_field_mapping(session)
+
+    mapping = str(row.get("field_mapping") or "").strip()
+    if mapping:
+        session.selections["field_mapping"] = mapping
+    if row.get("template_code"):
+        session.selections["template_code"] = str(row["template_code"])
+    if row.get("doc_type"):
+        session.selections.setdefault("doc_type", str(row["doc_type"]))
+    if row.get("template_version") is not None:
+        session.selections["template_version"] = row["template_version"]
+    if row.get("template_version_id"):
+        session.selections["template_version_id"] = str(row["template_version_id"])
+    if row.get("s3_key"):
+        session.selections["s3_key"] = str(row["s3_key"])
+    if row.get("s3_bucket"):
+        session.selections["s3_bucket"] = str(row["s3_bucket"])
+    if row.get("sample_input"):
+        session.selections["sample_input"] = row["sample_input"]
+
+    return mapping or _resolve_field_mapping(session)
+
+
 def _required_doc_names(session: FilingSession) -> List[str]:
     names = []
     for doc in required_templates(session):
@@ -305,7 +338,7 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             session.selections.get("extracted_form_questions") or [],
             workflow_questions,
             session.collected_answers,
-            _resolve_field_mapping(session),
+            await _load_field_mapping_from_db(ctx, session),
         )
         answers = dict(session.collected_answers)
         for question in workflow_questions:
@@ -335,7 +368,7 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 answers=answers,
                 file_name=file_name,
             )
-            field_mapping = _resolve_field_mapping(session)
+            field_mapping = await _load_field_mapping_from_db(ctx, session)
             if not field_mapping:
                 raise RuntimeError(
                     "The selected document template has no field_mapping, "
@@ -343,15 +376,19 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 )
             from app.services.field_mapping_service import (
                 FieldMappingService,
+                assert_valid_generate_documents_payload,
                 materialize_field_mapping,
             )
 
             await ctx.notify("mapping_fields")
+            sample_input = session.selections.get("sample_input")
             mapping_result = await FieldMappingService(ctx.bedrock).map_fields(
                 field_mapping=field_mapping,
                 workflow_questions=session.workflow_questions,
                 collected_answers=answers,
                 filled_fields=filled.fields,
+                selections=session.selections,
+                sample_input=sample_input,
             )
             mapped_fields = mapping_result.fields
             request_payload = materialize_field_mapping(
@@ -359,6 +396,13 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 mapped_fields=mapped_fields,
                 selections=session.selections,
                 collected_answers=answers,
+                sample_input=sample_input,
+            )
+            payload_validation = assert_valid_generate_documents_payload(
+                field_mapping,
+                request_payload,
+                sample_input=sample_input,
+                selections=session.selections,
             )
             output_fields = (
                 request_payload.get("form_data")
@@ -371,6 +415,9 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "missing_from_llm": mapping_result.missing_from_llm,
                 "backfilled_targets": mapping_result.backfilled_targets,
                 "empty_targets": mapping_result.empty_targets,
+                "payload_valid": payload_validation.is_valid,
+                "expected_form_data_keys": payload_validation.expected_form_data_keys,
+                "semantic_errors": payload_validation.semantic_errors,
             }
             generated.append(
                 {

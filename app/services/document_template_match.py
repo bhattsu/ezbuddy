@@ -173,7 +173,10 @@ def template_questions_to_workflow(
 
 
 def _humanize_mapping_source(name: str) -> str:
-    cleaned = re.sub(r"^_+|_+$", "", str(name or ""))
+    key = str(name or "").strip()
+    if key == "$email":
+        return "What is your email address?"
+    cleaned = re.sub(r"^_+|_+$", "", key)
     cleaned = cleaned.replace("_", " ").strip()
     return cleaned[:1].upper() + cleaned[1:].lower() if cleaned else name
 
@@ -308,7 +311,7 @@ def merge_document_and_mapping_questions(
                 "question": _humanize_mapping_source(source),
                 "required": True,
                 "sort_order": index,
-                "question_type": "text",
+                "question_type": "email" if source == "$email" else "text",
                 "mapping_source": source,
             }
         )

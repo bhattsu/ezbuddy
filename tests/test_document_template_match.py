@@ -327,7 +327,9 @@ def test_merge_envelope_mapping_asks_only_form_data_and_hides_follow_ups():
     """
     merged = merge_document_and_mapping_questions([], mapping)
     names = [row["field_name"] for row in merged]
-    assert names == ["_DRIVER_LICENSE", "_LICENSE_NUMBER"]
+    assert names == ["_DRIVER_LICENSE", "_LICENSE_NUMBER", "$email"]
+    email_row = next(row for row in merged if row["field_name"] == "$email")
+    assert email_row["question_type"] == "email"
     license_number = next(row for row in merged if row["field_name"] == "_LICENSE_NUMBER")
     assert license_number["visibility_condition"] == {"_DRIVER_LICENSE": "yes"}
     assert next(row for row in merged if row["field_name"] == "_DRIVER_LICENSE")[
