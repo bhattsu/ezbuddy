@@ -76,6 +76,7 @@ def build_filing_graph(ctx: FilingOrchestratorContext):
         route_after_navigation,
         {
             "init_workflow": "init_workflow",
+            "offer_documents": "offer_documents",
             "workflow": "workflow",
             "case_located": "persist",
             "persist": "persist",

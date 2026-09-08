@@ -13,6 +13,7 @@ from app.agents.conversation.orchestration.helpers import (
     classify_document_offer_reply,
     format_required_document_list,
     merge_prefilled_answers,
+    next_pending_question,
     persist_system_state,
     required_templates,
     result_from_session,
@@ -28,6 +29,7 @@ from app.agents.conversation.orchestration.state import (
 from app.api.schemas.filing_events import FilingPhase
 from app.core.prompts.document_offer import (
     AWAITING_UPLOAD_MESSAGE,
+    DOCUMENT_OFFER_AFTER_TEMPLATE,
     DOCUMENT_OFFER_MESSAGE,
     DOCUMENT_OFFER_NO_TEMPLATES,
     DOCUMENT_OFFER_WITH_REQUIRED,
@@ -97,6 +99,14 @@ def _required_doc_names(session: FilingSession) -> List[str]:
 
 
 def _offer_message(session: FilingSession) -> str:
+    if session.selections.get("template_questions_ready"):
+        doc_name = str(
+            session.selections.get("document_type_name")
+            or session.selections.get("template_code")
+            or session.selections.get("doc_type")
+            or "this document"
+        ).strip()
+        return DOCUMENT_OFFER_AFTER_TEMPLATE.format(doc_name=doc_name)
     docs = required_templates(session)
     names = _required_doc_names(session)
     if names:
@@ -278,6 +288,52 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 **state,
                 "phase": session.phase.value,
                 "next_node": "generate_documents",
+            }
+
+        if session.selections.get("template_questions_ready"):
+            from app.agents.utils.workflow_batch import format_next_form_question_message
+
+            session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+            await ctx.notify("collecting_workflow_answers")
+            if newly:
+                intro = (
+                    f"I pre-filled {len(newly)} field(s) from your document "
+                    "and skipped those questions."
+                    + fail_note
+                )
+            elif successful:
+                intro = (
+                    "I reviewed the uploaded document but did not find additional "
+                    "filled values that match the remaining questions."
+                    + fail_note
+                )
+            else:
+                intro = (
+                    "I could not analyze the uploaded file(s)."
+                    + fail_note
+                )
+            message = format_next_form_question_message(
+                intro,
+                next_pending_question(session),
+            )
+            combined = successful[0]["analysis"] if successful else {}
+            result = result_from_session(
+                session,
+                message,
+                event_kind="analysis.complete",
+                metadata={
+                    "prefilled_fields": newly,
+                    "files": results,
+                    "required_documents": required_templates(session),
+                },
+                analysis=combined,
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
             }
 
         session.phase = FilingPhase.AWAITING_DOCUMENT_UPLOAD

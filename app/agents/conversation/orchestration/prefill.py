@@ -37,21 +37,56 @@ def _normalize_key(key: str) -> str:
     return "".join(ch for ch in str(key).lower() if ch.isalnum())
 
 
+def _question_aliases(question: Dict[str, Any]) -> List[str]:
+    names = [
+        question.get("field_name"),
+        question.get("mapping_source"),
+        question.get("pdf_field"),
+        question.get("field_label"),
+        question.get("question"),
+        question.get("field"),
+    ]
+    return [str(name).strip() for name in names if str(name or "").strip()]
+
+
+def _key_variants(key: str) -> List[str]:
+    text = str(key or "").strip()
+    if not text:
+        return []
+    variants = [text]
+    for sep in (".", "/", ":"):
+        if sep in text:
+            parts = [part for part in text.split(sep) if part]
+            if parts:
+                variants.append(parts[-1])
+                variants.append(" ".join(parts))
+                variants.append("".join(parts))
+            break
+    return variants
+
+
 def heuristic_map_analysis_to_answers(
     workflow_questions: List[Dict[str, Any]],
     analyses: List[Dict[str, Any]],
     existing_answers: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Deterministic mapping: exact and case-insensitive field_name matches."""
+    """Match filled analysis values onto workflow field names, including aliases."""
     existing = existing_answers or {}
-    allowed = {q["field_name"] for q in workflow_questions if q.get("field_name")}
-    allowed_norm = {_normalize_key(name): name for name in allowed}
+    allowed_norm: Dict[str, str] = {}
+    for question in workflow_questions:
+        field_name = str(question.get("field_name") or "").strip()
+        if not field_name:
+            continue
+        for alias in _question_aliases(question):
+            allowed_norm.setdefault(_normalize_key(alias), field_name)
 
     pooled: Dict[str, Any] = {}
     for analysis in analyses:
         extracted = analysis.get("extracted_fields") or {}
         if isinstance(extracted, dict):
-            pooled.update(extracted)
+            for key, value in extracted.items():
+                if value not in (None, "", [], {}):
+                    pooled[str(key)] = value
         user_details = analysis.get("user_details") or {}
         if isinstance(user_details, dict):
             pooled.update(_flatten(user_details))
@@ -60,13 +95,11 @@ def heuristic_map_analysis_to_answers(
     for key, value in pooled.items():
         if value in (None, "", [], {}):
             continue
-        if key in allowed and key not in existing:
-            mapped[key] = value
-            continue
-        norm = _normalize_key(key)
-        field = allowed_norm.get(norm)
-        if field and field not in existing and field not in mapped:
-            mapped[field] = value
+        for variant in _key_variants(key):
+            field = allowed_norm.get(_normalize_key(variant))
+            if field and field not in existing and field not in mapped:
+                mapped[field] = value
+                break
     return mapped
 
 

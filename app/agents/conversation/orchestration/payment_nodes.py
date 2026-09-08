@@ -15,7 +15,6 @@ from app.agents.conversation.orchestration.session_manager import FilingSessionM
 from app.agents.conversation.orchestration.state import FilingGraphState
 from app.api.schemas.filing_events import FilingPhase
 from app.services.uslegalpro_payment_service import (
-    COURT_ACCOUNT_THANKS,
     PAYMENT_ID_PROMPT,
     PaymentApiNotConfiguredError,
     USLegalProPaymentService,
@@ -227,33 +226,32 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
             "next_node": "persist",
         }
 
+    from app.services.uslegalpro_efile_service import format_efile_success_message
+
     session.selections["reference_id"] = submit_result.reference_id
     session.selections["envelope_id"] = submit_result.envelope_id
+    session.selections["case_tracking_id"] = (
+        submit_result.case_tracking_id or session.selections.get("case_tracking_id")
+    )
+    session.selections["efile_submit_filings"] = submit_result.filings
     session.selections["efile_submit_status"] = submit_result.status
     session.selections["efile_submit_message"] = submit_result.message
     session.phase = FilingPhase.COMPLETE
     await ctx.conversation_repo.complete_conversation(session.conversation_id)
     await persist_system_state(ctx.conversation_repo, session)
-    envelope_line = (
-        f" Envelope ID: {submit_result.envelope_id}."
-        if submit_result.envelope_id
-        else ""
-    )
-    reference_line = (
-        f" Reference ID: {submit_result.reference_id}."
-        if submit_result.reference_id
-        else ""
-    )
     result = result_from_session(
         session,
-        COURT_ACCOUNT_THANKS + envelope_line + reference_line,
+        format_efile_success_message(submit_result),
         event_kind="documents.ready",
         metadata={
             "generated_documents": session.generated_documents,
             "court_payment_account": chosen,
             "envelope_id": submit_result.envelope_id,
             "reference_id": submit_result.reference_id,
+            "case_tracking_id": submit_result.case_tracking_id,
+            "efile_submit_filings": submit_result.filings,
             "efile_submit_status": submit_result.status,
+            "efile_response": submit_result.raw,
         },
     )
     return {
@@ -272,6 +270,7 @@ async def _submit_efile_after_payment(ctx, session) -> Optional[Any]:
             selections=session.selections,
             collected_answers=session.collected_answers,
             generated_documents=session.generated_documents,
+            workflow_questions=session.workflow_questions,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("E-file submission failed")

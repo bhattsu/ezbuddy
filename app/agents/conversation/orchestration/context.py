@@ -24,6 +24,12 @@ from app.services.uslegalpro_existing_case_service import (
 from app.utils.s3_utils import S3Manager
 
 
+def _efile_mapping_service(bedrock: Bedrock):
+    from app.services.efile_mapping_service import EfileMappingService
+
+    return EfileMappingService(bedrock=bedrock)
+
+
 @dataclass
 class FilingOrchestratorContext:
     """Shared dependencies injected into LangGraph node closures."""
@@ -119,6 +125,7 @@ class FilingOrchestratorContext:
             or USLegalProEFileService(
                 user_repo=resolved_user_repo,
                 codes_service=resolved_codes_service,
+                mapping_service=_efile_mapping_service(shared),
             ),
             submission_repo=submission_repo or FilingSubmissionRepository(rds=filing_repo.rds),
             existing_case_service=existing_case_service

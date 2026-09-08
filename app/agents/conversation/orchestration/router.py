@@ -40,10 +40,12 @@ def route_after_message_prepare(
 
 def route_after_navigation(
     state: FilingGraphState,
-) -> Literal["init_workflow", "workflow", "case_located", "persist"]:
+) -> Literal["init_workflow", "offer_documents", "workflow", "case_located", "persist"]:
     next_node = state.get("next_node") or "persist"
     if next_node == "init_workflow":
         return "init_workflow"
+    if next_node == "offer_documents":
+        return "offer_documents"
     if next_node == "workflow":
         return "workflow"
     if next_node == "case_located":

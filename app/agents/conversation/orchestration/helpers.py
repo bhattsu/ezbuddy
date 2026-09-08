@@ -594,7 +594,7 @@ def advance_phase_after_selections(session: FilingSession) -> None:
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
         ):
-            session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+            session.phase = FilingPhase.OFFERING_DOCUMENTS
         elif session.phase == FilingPhase.SELECTING_COUNTY and sel.get("county_name"):
             session.phase = FilingPhase.SELECTING_JURISDICTION
     elif session.mode == FilingMode.FILING_EXISTING:
@@ -611,7 +611,7 @@ def advance_phase_after_selections(session: FilingSession) -> None:
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
         ):
-            session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+            session.phase = FilingPhase.OFFERING_DOCUMENTS
 
 
 def question_visible(question: Dict[str, Any], answers: Dict[str, Any]) -> bool:
@@ -864,9 +864,15 @@ def uploads_from_state(state: FilingGraphState) -> List[Dict[str, Any]]:
 
 
 def is_new_filing_prefill_phase(session: FilingSession) -> bool:
-    return session.mode == FilingMode.FILING_NEW and session.phase in (
+    """Uploads in these phases prefill workflow answers instead of existing-case lookup."""
+    if session.phase in (
         FilingPhase.OFFERING_DOCUMENTS,
         FilingPhase.AWAITING_DOCUMENT_UPLOAD,
+    ):
+        return True
+    return bool(
+        session.selections.get("template_questions_ready")
+        and session.phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS
     )
 
 

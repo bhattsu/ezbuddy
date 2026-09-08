@@ -1087,6 +1087,11 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             next_node = "init_workflow"
         elif (
             phase_before == FilingPhase.SELECTING_DOCUMENT_TYPE
+            and session.phase == FilingPhase.OFFERING_DOCUMENTS
+        ):
+            next_node = "offer_documents"
+        elif (
+            phase_before == FilingPhase.SELECTING_DOCUMENT_TYPE
             and session.phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS
         ):
             assistant_message = format_next_form_question_message(
@@ -1111,6 +1116,18 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "assistant_message": assistant_message,
                 "skip_user_persist": skip_user_persist,
                 "next_node": "init_workflow",
+            }
+
+        if next_node == "offer_documents":
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "phase_before": phase_before.value,
+                "assistant_message": assistant_message,
+                "skip_user_persist": skip_user_persist,
+                "user_message": "[document_offer]",
+                "next_node": "offer_documents",
             }
 
         if next_node == "case_located":
