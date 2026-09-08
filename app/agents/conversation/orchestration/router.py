@@ -33,6 +33,7 @@ def route_after_message_prepare(
     if phase in {
         FilingPhase.VERIFYING_PLATFORM_PAYMENT.value,
         FilingPhase.VERIFYING_COURT_PAYMENT.value,
+        FilingPhase.CONFIRMING_EFILE.value,
     }:
         return "verify_payment"
     return "navigation"

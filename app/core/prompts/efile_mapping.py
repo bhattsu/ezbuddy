@@ -34,7 +34,8 @@ Rules:
 - filing_party_id must be the id of the filing party in case_parties.
 - Keep associated_parties and additional_attorneys as lists.
 - is_business must be true or false.
-- If a value is unknown, use "" (or [] / false for those types). Do not reuse sample placeholders.
+- If a value is unknown, use "" (or [] / false for those types).
+- Do not copy sample placeholders, hardcoded codes, or unmatched catalog values.
 
 Return JSON only:
 {{
@@ -71,7 +72,7 @@ Rules:
 - Use the generated document file URL from known facts for filings[0].file.
 - Use case_tracking_id, payment_account_id, and filing_party_id from known facts when present.
 - Use catalog codes for filing code and doc_type when they match the selected document.
-- If a value is unknown, use "". Do not reuse sample placeholders.
+- If a value is unknown, use "". Do not copy sample placeholders or unmatched codes.
 
 Return JSON only:
 {{

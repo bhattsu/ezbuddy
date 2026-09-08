@@ -83,7 +83,7 @@ EXISTING_CASE_EFILE_SAMPLE = {
                 "file_name": "Notice.pdf",
                 "description": "Notice of Appeal",
                 "doc_type": "44889",
-                "file": "https://example.com/notice.pdf",
+                "file": "https://ontheline.trincoll.edu/images/bookdown/sample-local-pdf.pdf",
             }
         ],
     }
@@ -97,6 +97,283 @@ EXISTING_CASE_EFILE_KEYS = (
     "filing_type",
     "filings",
 )
+NEW_CASE_EFILE_KEYS = (
+    "filer_type",
+    "reference_id",
+    "jurisdiction",
+    "payment_account_id",
+    "filings",
+    "case_parties",
+    "provider_tax",
+    "filing_type",
+    "filing_state",
+    "case_type",
+    "provider_fee",
+    "case_category",
+    "filing_party_id",
+)
+NEW_CASE_FILING_KEYS = (
+    "code",
+    "file_name",
+    "description",
+    "doc_type",
+    "file",
+    "size",
+    "associated_parties",
+    "id",
+)
+EXISTING_CASE_FILING_KEYS = (
+    "code",
+    "file_name",
+    "description",
+    "doc_type",
+    "file",
+)
+NEW_CASE_PARTY_KEYS = (
+    "country",
+    "city",
+    "type",
+    "zip_code",
+    "address_line_1",
+    "id",
+    "state",
+    "first_name",
+    "is_business",
+    "lead_attorney",
+    "last_name",
+    "additional_attorneys",
+)
+
+
+def _text(value: Any) -> str:
+    if value in (None,):
+        return ""
+    return str(value).strip()
+
+
+def _int_or_empty(value: Any):
+    if value in (None, ""):
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+
+
+def _selected_code(selections: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _text(selections.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _split_name(value: Any) -> tuple[str, str]:
+    parts = _text(value).split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+def _name_from_maps(
+    sources: List[Dict[str, Any]], needles: tuple[str, ...]
+) -> tuple[str, str]:
+    for source in sources:
+        for key, raw in (source or {}).items():
+            upper = str(key).upper()
+            if any(needle in upper for needle in needles):
+                first, last = _split_name(raw)
+                if first or last:
+                    return first, last
+    return "", ""
+
+
+def _address_from_maps(sources: List[Dict[str, Any]], *needles: str) -> str:
+    for source in sources:
+        for key, raw in (source or {}).items():
+            upper = str(key).upper()
+            if any(needle in upper for needle in needles):
+                value = _text(raw)
+                if value:
+                    return value
+    return ""
+
+
+def _generated_file(
+    selections: Dict[str, Any], generated_documents: Optional[List[Dict[str, Any]]]
+) -> Dict[str, Any]:
+    row = dict((generated_documents or [{}])[0] or {}) if generated_documents else {}
+    file_url = _text(
+        row.get("file")
+        or row.get("file_url")
+        or row.get("download_url")
+        or row.get("s3_url")
+        or selections.get("efile_file_url")
+    )
+    return {
+        "file": file_url,
+        "file_name": _text(row.get("file_name") or selections.get("generated_pdf_name")),
+        "description": _text(
+            row.get("template_name")
+            or selections.get("document_type_name")
+            or selections.get("template_code")
+        ),
+        "size": _int_or_empty(row.get("size") or selections.get("efile_file_size")),
+        "id": _text(row.get("document_id") or row.get("id")),
+    }
+
+
+def _new_case_filing(
+    selections: Dict[str, Any], generated_documents: Optional[List[Dict[str, Any]]]
+) -> Dict[str, Any]:
+    generated = _generated_file(selections, generated_documents)
+    filing = {key: "" for key in NEW_CASE_FILING_KEYS}
+    filing["code"] = _selected_code(selections, "filing_code")
+    filing["doc_type"] = _selected_code(
+        selections, "doc_type", "document_type_code"
+    )
+    filing["file"] = generated["file"]
+    filing["file_name"] = generated["file_name"]
+    filing["description"] = generated["description"]
+    filing["size"] = generated["size"]
+    filing["id"] = generated["id"]
+    filing["associated_parties"] = []
+    return filing
+
+
+def _existing_case_filing(
+    selections: Dict[str, Any], generated_documents: Optional[List[Dict[str, Any]]]
+) -> Dict[str, Any]:
+    generated = _generated_file(selections, generated_documents)
+    return {
+        "code": _selected_code(selections, "filing_code"),
+        "file_name": generated["file_name"],
+        "description": generated["description"],
+        "doc_type": _selected_code(selections, "doc_type", "document_type_code"),
+        "file": generated["file"],
+    }
+
+
+def _new_case_parties(
+    selections: Dict[str, Any],
+    collected_answers: Optional[Dict[str, Any]],
+    form_data: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    answers = dict(collected_answers or {})
+    form = dict(form_data or {})
+    sources = [selections, answers, form]
+    party_type = _selected_code(selections, "party_type_code")
+    first = _text(selections.get("first_name") or selections.get("plaintiff_first_name"))
+    last = _text(selections.get("last_name") or selections.get("plaintiff_last_name"))
+    if not first and not last:
+        first, last = _name_from_maps(
+            sources, ("PLAINTIFF", "PETITIONER", "PARTY_1", "FILING_PARTY")
+        )
+    city = _address_from_maps(sources, "CITY")
+    address = _address_from_maps(sources, "ADDRESS_LINE", "ADDRESS1", "STREET")
+    zip_code = _address_from_maps(sources, "ZIP", "POSTAL")
+    state = _address_from_maps(sources, "STATE")
+    country = _address_from_maps(sources, "COUNTRY")
+    attorney = _address_from_maps(sources, "LEAD_ATTORNEY", "ATTORNEY")
+    party_id = _selected_code(selections, "filing_party_id", "efile_filing_party_id")
+
+    first_party = {key: "" for key in NEW_CASE_PARTY_KEYS}
+    first_party.update(
+        {
+            "country": country,
+            "city": city,
+            "type": party_type,
+            "zip_code": zip_code,
+            "address_line_1": address,
+            "id": party_id,
+            "state": state,
+            "first_name": first,
+            "is_business": False,
+            "lead_attorney": attorney,
+            "last_name": last,
+            "additional_attorneys": [],
+        }
+    )
+    parties = [first_party]
+
+    other_first, other_last = _name_from_maps(
+        sources, ("DEFENDANT", "RESPONDENT", "PARTY_2")
+    )
+    if other_first or other_last:
+        second = {key: "" for key in NEW_CASE_PARTY_KEYS}
+        second.update(
+            {
+                "first_name": other_first,
+                "last_name": other_last,
+                "is_business": False,
+                "additional_attorneys": [],
+            }
+        )
+        parties.append(second)
+    return parties
+
+
+def assemble_new_case_efile_data(
+    *,
+    selections: Dict[str, Any],
+    collected_answers: Optional[Dict[str, Any]] = None,
+    generated_documents: Optional[List[Dict[str, Any]]] = None,
+    reference_id: str = "",
+) -> Dict[str, Any]:
+    """Fill the new-case sample shape from session cache/answers only."""
+    form_data = mapped_form_data_from_documents(generated_documents)
+    parties = _new_case_parties(selections, collected_answers, form_data)
+    filing_party_id = _selected_code(
+        selections, "filing_party_id", "efile_filing_party_id"
+    )
+    if not filing_party_id and parties and parties[0].get("id"):
+        filing_party_id = str(parties[0]["id"])
+    data = {key: "" for key in NEW_CASE_EFILE_KEYS}
+    data.update(
+        {
+            "filer_type": _text(selections.get("filer_type")),
+            "reference_id": _text(reference_id or selections.get("reference_id")),
+            "jurisdiction": _selected_code(selections, "jurisdiction_code"),
+            "payment_account_id": _selected_code(
+                selections, "court_payment_account_id"
+            ),
+            "filings": [_new_case_filing(selections, generated_documents)],
+            "case_parties": parties,
+            "provider_tax": _text(selections.get("provider_tax")),
+            "filing_type": _text(selections.get("filing_type")),
+            "filing_state": _text(selections.get("state_code")).lower(),
+            "case_type": _selected_code(selections, "case_type_code"),
+            "provider_fee": _text(selections.get("provider_fee")),
+            "case_category": _selected_code(selections, "case_category_code"),
+            "filing_party_id": filing_party_id,
+        }
+    )
+    return data
+
+
+def assemble_existing_case_efile_data(
+    *,
+    selections: Dict[str, Any],
+    generated_documents: Optional[List[Dict[str, Any]]] = None,
+    reference_id: str = "",
+) -> Dict[str, Any]:
+    """Fill the existing-case sample shape from session cache/answers only."""
+    return {
+        "reference_id": _text(reference_id or selections.get("reference_id")),
+        "case_tracking_id": _text(selections.get("case_tracking_id")),
+        "payment_account_id": _selected_code(selections, "court_payment_account_id"),
+        "filing_party_id": _selected_code(
+            selections, "filing_party_id", "efile_filing_party_id"
+        ),
+        "filing_type": _text(selections.get("filing_type")),
+        "filings": [_existing_case_filing(selections, generated_documents)],
+    }
 
 
 class EfileMappingLLMOutput(BaseModel):

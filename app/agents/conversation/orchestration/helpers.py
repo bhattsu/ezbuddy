@@ -467,9 +467,67 @@ async def load_db_options(
         return [case] if case else []
     if phase == FilingPhase.VERIFYING_COURT_PAYMENT:
         return list(selections.get("court_payment_accounts") or [])
+    if phase == FilingPhase.CONFIRMING_EFILE:
+        return []
     if phase in (FilingPhase.EXISTING_SEARCH_PARTY, FilingPhase.EXISTING_SEARCH_DATE):
         return list(selections.get("search_results") or [])
     return []
+
+
+_PHASE_CACHE_KEYS = {
+    FilingPhase.SELECTING_JURISDICTION: "cached_jurisdictions",
+    FilingPhase.EXISTING_SELECTING_JURISDICTION: "cached_jurisdictions",
+    FilingPhase.SELECTING_CASE_CATEGORY: "cached_case_categories",
+    FilingPhase.SELECTING_CASE_TYPE: "cached_case_types",
+    FilingPhase.SELECTING_CASE_PARTIES: "cached_party_types",
+    FilingPhase.SELECTING_FILING_CODE: "cached_filing_codes",
+    FilingPhase.SELECTING_DOCUMENT_TYPE: "cached_document_types",
+}
+
+
+def compact_cached_options(options: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for row in options or []:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or row.get("doc_type") or "").strip()
+        name = str(
+            row.get("name")
+            or row.get("label")
+            or row.get("template_name")
+            or ""
+        ).strip()
+        item: Dict[str, Any] = {"code": code, "name": name}
+        if row.get("doc_type"):
+            item["doc_type"] = str(row.get("doc_type")).strip()
+        if row.get("filing_codes_url"):
+            item["filing_codes_url"] = str(row.get("filing_codes_url")).strip()
+        if row.get("document_type_codes_url"):
+            item["document_type_codes_url"] = str(
+                row.get("document_type_codes_url")
+            ).strip()
+        if code or name:
+            rows.append(item)
+    return rows
+
+
+def cache_phase_options(
+    session: FilingSession, phase: FilingPhase, options: List[Dict[str, Any]]
+) -> None:
+    """Keep catalog lists the user already saw so e-file can reuse them."""
+    key = _PHASE_CACHE_KEYS.get(phase)
+    if not key:
+        return
+    rows = compact_cached_options(options)
+    if rows:
+        session.selections[key] = rows
+
+
+def cached_catalog_rows(selections: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
+    rows = selections.get(key)
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
 
 
 def attach_selection_options_to_result(
@@ -806,6 +864,7 @@ def result_from_session(
         FilingPhase.GENERATING_DOCUMENTS,
         FilingPhase.VERIFYING_PLATFORM_PAYMENT,
         FilingPhase.VERIFYING_COURT_PAYMENT,
+        FilingPhase.CONFIRMING_EFILE,
         FilingPhase.COMPLETE,
     )
     checklist = (

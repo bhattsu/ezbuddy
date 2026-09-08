@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Dict, Optional
 
 from app.agents.conversation.orchestration.context import FilingOrchestratorContext
 from app.agents.conversation.orchestration.helpers import (
     attach_selection_options_to_result,
+    classify_document_offer_reply,
     persist_system_state,
     result_from_session,
 )
@@ -47,6 +49,8 @@ def build_payment_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             raise RuntimeError(f"No session for conversation {cid}")
 
         user_message = str(state.get("user_message") or "")
+        if session.phase == FilingPhase.CONFIRMING_EFILE:
+            return await _handle_efile_confirm(ctx, state, session, user_message)
         if session.phase == FilingPhase.VERIFYING_COURT_PAYMENT:
             return await _handle_court_payment(
                 ctx, service, state, session, user_message
@@ -208,15 +212,27 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
 
     session.selections["court_payment_account_id"] = chosen.get("id")
     session.selections["court_payment_account"] = chosen
-    await ctx.notify("submitting_efile")
-    submit_result = await _submit_efile_after_payment(ctx, session)
-    if submit_result is None:
+    return await _show_efile_preview(ctx, state, session)
+
+
+async def _show_efile_preview(ctx, state, session):
+    from app.services.uslegalpro_efile_service import format_efile_preview_message
+
+    await ctx.notify("confirming_efile")
+    try:
+        payload = await ctx.efile_service.build_submit_payload(
+            mode=session.mode.value,
+            selections=session.selections,
+            collected_answers=session.collected_answers,
+            generated_documents=session.generated_documents,
+            workflow_questions=session.workflow_questions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("E-file preview mapping failed")
         result = result_from_session(
             session,
-            "I verified your payment account, but I could not submit the filing yet. "
-            "Please review the filing details and try again.",
+            f"I could not build the e-file request yet. {exc}",
             event_kind="payment.court",
-            metadata={"court_payment_account": chosen},
         )
         await persist_system_state(ctx.conversation_repo, session)
         return {
@@ -226,7 +242,99 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
             "next_node": "persist",
         }
 
-    from app.services.uslegalpro_efile_service import format_efile_success_message
+    session.selections["efile_payload_preview"] = payload
+    session.phase = FilingPhase.CONFIRMING_EFILE
+    result = result_from_session(
+        session,
+        format_efile_preview_message(payload),
+        event_kind="efile.confirm",
+        metadata={"efile_payload_preview": payload},
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _handle_efile_confirm(ctx, state, session, user_message):
+    from app.services.uslegalpro_efile_service import (
+        format_efile_preview_message,
+        format_efile_success_message,
+    )
+
+    preview = session.selections.get("efile_payload_preview")
+    if not isinstance(preview, dict) or not preview:
+        return await _show_efile_preview(ctx, state, session)
+
+    intent = classify_document_offer_reply(user_message)
+    if re.search(r"\b(confirm|submit|efile|e-file)\b", user_message or "", re.I):
+        intent = "yes"
+    if intent == "done":
+        intent = "yes"
+    if intent == "no":
+        session.selections.pop("efile_payload_preview", None)
+        session.selections.pop("efile_payload_override", None)
+        session.phase = FilingPhase.VERIFYING_COURT_PAYMENT
+        result = result_from_session(
+            session,
+            "E-file submission was cancelled. Choose a court payment account "
+            "again if you want to continue.",
+            event_kind="payment.court",
+            metadata={
+                "court_payment_accounts": session.selections.get(
+                    "court_payment_accounts"
+                ),
+            },
+        )
+        result = _with_account_options(
+            result, list(session.selections.get("court_payment_accounts") or [])
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
+    if intent != "yes":
+        result = result_from_session(
+            session,
+            format_efile_preview_message(preview),
+            event_kind="efile.confirm",
+            metadata={"efile_payload_preview": preview},
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
+    session.selections["efile_payload_override"] = preview
+    await ctx.notify("submitting_efile")
+    submit_result = await _submit_efile_after_payment(ctx, session)
+    if submit_result is None:
+        error = str(session.selections.get("efile_submit_error") or "").strip()
+        result = result_from_session(
+            session,
+            "I could not submit the filing."
+            + (f" {error}" if error else "")
+            + "\nReply yes to try again, or no to cancel.",
+            event_kind="efile.confirm",
+            metadata={"efile_payload_preview": preview},
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
 
     session.selections["reference_id"] = submit_result.reference_id
     session.selections["envelope_id"] = submit_result.envelope_id
@@ -245,7 +353,7 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
         event_kind="documents.ready",
         metadata={
             "generated_documents": session.generated_documents,
-            "court_payment_account": chosen,
+            "court_payment_account": session.selections.get("court_payment_account"),
             "envelope_id": submit_result.envelope_id,
             "reference_id": submit_result.reference_id,
             "case_tracking_id": submit_result.case_tracking_id,

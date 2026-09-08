@@ -1,4 +1,4 @@
-"""Tests for new-case e-file mapping and existing-case payload shape."""
+"""Tests for cache-only e-file mapping and existing-case payload shape."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ import pytest
 
 from app.services.efile_mapping_service import (
     apply_known_efile_facts,
+    assemble_new_case_efile_data,
     mapped_form_data_from_documents,
 )
 from app.services.uslegalpro_efile_service import (
     EFileSubmitResult,
     USLegalProEFileService,
+    format_efile_preview_message,
     format_efile_success_message,
 )
 
@@ -91,55 +93,43 @@ def test_format_efile_success_message():
     assert "77c253a9-eaf3-47ea-93da-5fa67c6ab187" in message
 
 
-class _FakeMapper:
-    async def map_new_case(self, **kwargs):
-        return {
-            "filer_type": "54325",
-            "case_parties": [
-                {
-                    "id": "Party_abc",
-                    "type": "53024",
-                    "first_name": "JANE",
-                    "last_name": "DOE",
-                    "city": "Houston",
-                    "state": "TX",
-                    "is_business": False,
-                    "additional_attorneys": [],
-                }
-            ],
-            "filings": [{"description": "Petition"}],
-        }
-
-    async def map_existing_case(self, **kwargs):
-        raise AssertionError("new-case path must not call the existing-case mapper")
+def test_format_efile_preview_message_asks_to_confirm():
+    message = format_efile_preview_message({"data": {"reference_id": "DRAFT-2026-10034"}})
+    assert "This is the e-file request JSON" in message
+    assert "yes if we should e-file" in message
+    assert "DRAFT-2026-10034" in message
 
 
-class _ExistingFakeMapper:
-    async def map_new_case(self, **kwargs):
-        raise AssertionError("existing-case path must not call the new-case mapper")
-
-    async def map_existing_case(self, **kwargs):
-        return {
-            "reference_id": "should-be-overlaid",
-            "case_tracking_id": "wrong-track",
-            "payment_account_id": "wrong-pay",
-            "filing_party_id": "",
-            "filing_type": "",
-            "filings": [
-                {
-                    "description": "Notice of Appeal",
-                    "file": "https://old.example/notice.pdf",
-                }
-            ],
-        }
+def test_assemble_leaves_missing_fields_empty():
+    data = assemble_new_case_efile_data(
+        selections={"state_code": "tx"},
+        collected_answers={},
+        generated_documents=[],
+        reference_id="DRAFT-2026-10034",
+    )
+    assert data["jurisdiction"] == ""
+    assert data["case_type"] == ""
+    assert data["case_category"] == ""
+    assert data["filer_type"] == ""
+    assert data["filing_type"] == ""
+    assert data["provider_tax"] == ""
+    assert data["provider_fee"] == ""
+    assert data["filings"][0]["code"] == ""
+    assert data["filings"][0]["doc_type"] == ""
+    assert data["filings"][0]["file"] == ""
+    assert data["filings"][0]["size"] == ""
+    assert data["case_parties"][0]["first_name"] == ""
+    assert data["case_parties"][0]["type"] == ""
+    assert data["reference_id"] == "DRAFT-2026-10034"
+    assert data["filing_state"] == "tx"
 
 
 class _EmptyCodes:
     async def fetch_by_url(self, url):
-        return []
+        raise AssertionError("must not live-fetch catalog for e-file mapping")
 
     async def get_party_types_for_case_type(self, *args, **kwargs):
-        return []
+        raise AssertionError("must not live-fetch catalog for e-file mapping")
 
 
 def _base_selections(**extra):
@@ -156,17 +146,15 @@ def _base_selections(**extra):
         "first_name": "Jane",
         "last_name": "Doe",
         "reference_id": "EFILE-TEST-1",
+        "document_type_name": "Petition",
     }
     data.update(extra)
     return data
 
 
 @pytest.mark.asyncio
-async def test_existing_case_payload_uses_llm_mapping():
-    service = USLegalProEFileService(
-        codes_service=_EmptyCodes(),
-        mapping_service=_ExistingFakeMapper(),
-    )
+async def test_existing_case_payload_uses_session_cache_only():
+    service = USLegalProEFileService(codes_service=_EmptyCodes())
     payload = await service.build_submit_payload(
         mode="filing_existing",
         selections=_base_selections(
@@ -197,15 +185,13 @@ async def test_existing_case_payload_uses_llm_mapping():
     assert "case_parties" not in data
     assert data["filings"][0]["file"] == "https://generated.example/case_document.pdf"
     assert data["filings"][0]["file_name"] == "case_document.pdf"
-    assert data["filings"][0]["description"] == "Notice of Appeal"
+    assert data["filings"][0]["code"] == "209523"
+    assert data["filings"][0]["doc_type"] == "53689"
 
 
 @pytest.mark.asyncio
-async def test_new_case_payload_uses_llm_mapping():
-    service = USLegalProEFileService(
-        codes_service=_EmptyCodes(),
-        mapping_service=_FakeMapper(),
-    )
+async def test_new_case_payload_uses_session_cache_only():
+    service = USLegalProEFileService(codes_service=_EmptyCodes())
     payload = await service.build_submit_payload(
         mode="filing_new",
         selections=_base_selections(),
@@ -224,7 +210,25 @@ async def test_new_case_payload_uses_llm_mapping():
     assert data["jurisdiction"] == "harris:dc"
     assert data["payment_account_id"] == "CC_01eb044f-9e41-4966-93e2-31a5f8d9c01b"
     assert data["case_type"] == "209421"
-    assert data["case_parties"][0]["first_name"] == "JANE"
+    assert data["case_category"] == "131370"
+    assert data["case_parties"][0]["first_name"] == "Jane"
+    assert data["case_parties"][0]["type"] == "53024"
     assert data["filings"][0]["file"] == "https://generated.example/case_document.pdf"
+    assert data["filings"][0]["code"] == "209523"
+    assert data["filings"][0]["doc_type"] == "53689"
     assert data["filings"][0]["description"] == "Petition"
-    assert data["filing_party_id"] == "Party_abc"
+    assert data["filer_type"] == ""
+    assert data["filing_type"] == ""
+
+
+@pytest.mark.asyncio
+async def test_build_submit_payload_uses_confirmed_override():
+    service = USLegalProEFileService(codes_service=_EmptyCodes())
+    preview = {"data": {"reference_id": "PREVIEW-1", "payment_account_id": "CC_1"}}
+    payload = await service.build_submit_payload(
+        mode="filing_new",
+        selections=_base_selections(efile_payload_override=preview),
+        collected_answers={},
+        generated_documents=[],
+    )
+    assert payload == preview

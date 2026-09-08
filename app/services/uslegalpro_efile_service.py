@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -29,6 +31,15 @@ class EFileSubmitResult:
     raw: Dict[str, Any]
     case_tracking_id: str = ""
     filings: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def format_efile_preview_message(payload: Dict[str, Any]) -> str:
+    body = json.dumps(payload or {}, indent=2, ensure_ascii=False)
+    return (
+        "This is the e-file request JSON. "
+        "Reply yes if we should e-file the case like this, or no to cancel.\n\n"
+        f"{body}"
+    )
 
 
 def format_efile_success_message(result: EFileSubmitResult) -> str:
@@ -58,6 +69,11 @@ def format_efile_success_message(result: EFileSubmitResult) -> str:
 def unique_reference_id(prefix: str = "EFILE") -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"{prefix}-{stamp}-{uuid4().hex[:12]}"
+
+
+def draft_reference_id(year: Optional[int] = None) -> str:
+    current_year = year or datetime.now(timezone.utc).year
+    return f"DRAFT-{current_year}-{random.randint(10000, 99999)}"
 
 
 def _items(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -311,131 +327,30 @@ class USLegalProEFileService:
         if payload:
             return payload
 
-        filing = _first_filing(selections, generated_documents)
-        await self._ensure_filing_code(selections, filing)
-        if not filing.get("file"):
-            raise ValueError(
-                "No filing document URL is available for e-file submission. "
-                "Provide selections.efile_file_url or efile_filings with file URLs."
-            )
-        if mode != "filing_existing":
-            if not filing.get("doc_type"):
-                raise ValueError("Document type code is required for e-file submission.")
-            if not filing.get("code"):
-                raise ValueError("Filing code is required for e-file submission.")
-
-        selected_party_id = str(
-            selections.get("filing_party_id")
-            or selections.get("efile_filing_party_id")
-            or ""
-        ).strip()
-        filing_party_id = selected_party_id or f"Party_{uuid4().hex[:8]}"
-        reference_id = str(selections.get("reference_id") or unique_reference_id())
-        payment_account_id = str(selections.get("court_payment_account_id") or "").strip()
-        if not payment_account_id:
-            raise ValueError("Court payment account id is required before e-filing.")
-
-        state_code = str(selections.get("state_code") or "").strip().lower()
-        if not state_code:
-            raise ValueError("State code is required before e-filing.")
-
-        data: Dict[str, Any] = {
-            "reference_id": reference_id,
-            "payment_account_id": payment_account_id,
-            "filing_party_id": filing_party_id,
-            "filings": [filing],
-        }
+        from app.services.efile_mapping_service import (
+            assemble_existing_case_efile_data,
+            assemble_new_case_efile_data,
+        )
 
         if mode == "filing_existing":
-            case_tracking_id = str(selections.get("case_tracking_id") or "").strip()
-            if not case_tracking_id:
-                raise ValueError("Existing-case filing requires case_tracking_id.")
-            known = {
-                "reference_id": reference_id,
-                "case_tracking_id": case_tracking_id,
-                "payment_account_id": payment_account_id,
-                "filing_party_id": selected_party_id,
-                "filing_type": str(selections.get("filing_type") or "").strip(),
-            }
-            mapped = await self._map_existing_case_data(
+            reference_id = str(
+                selections.get("reference_id") or unique_reference_id()
+            ).strip()
+            data = assemble_existing_case_efile_data(
                 selections=selections,
-                collected_answers=collected_answers,
                 generated_documents=generated_documents,
-                filing=filing,
-                known=known,
-                workflow_questions=workflow_questions,
+                reference_id=reference_id,
             )
-            if mapped:
-                data = mapped
-            else:
-                data.update(
-                    {
-                        "case_tracking_id": case_tracking_id,
-                        "filing_type": str(selections.get("filing_type") or ""),
-                    }
-                )
         else:
-            known = {
-                "filer_type": str(selections.get("filer_type") or "").strip(),
-                "reference_id": reference_id,
-                "jurisdiction": str(selections.get("jurisdiction_code") or "").strip(),
-                "payment_account_id": payment_account_id,
-                "case_category": str(selections.get("case_category_code") or "").strip(),
-                "case_type": str(
-                    selections.get("case_type_code") or selections.get("case_type") or ""
-                ).strip(),
-                "filing_type": str(selections.get("filing_type") or "").strip(),
-                "filing_state": state_code,
-                "provider_tax": str(selections.get("provider_tax") or "").strip(),
-                "provider_fee": str(selections.get("provider_fee") or "").strip(),
-                "filing_party_id": selected_party_id,
-                "party_type_code": str(selections.get("party_type_code") or "").strip(),
-                "party_type_name": str(selections.get("party_type_name") or "").strip(),
-            }
-            mapped = await self._map_new_case_data(
+            reference_id = str(
+                selections.get("reference_id") or draft_reference_id()
+            ).strip()
+            data = assemble_new_case_efile_data(
                 selections=selections,
                 collected_answers=collected_answers,
                 generated_documents=generated_documents,
-                filing=filing,
-                known=known,
-                workflow_questions=workflow_questions,
+                reference_id=reference_id,
             )
-            if mapped:
-                data = mapped
-            else:
-                case_parties = self._build_case_parties(selections, filing_party_id)
-                if not case_parties:
-                    raise ValueError(
-                        "New-case filing requires case party details. "
-                        "Provide selections.efile_case_parties or party type data."
-                    )
-                data.update(
-                    {
-                        "filer_type": str(
-                            selections.get("filer_type") or settings.ENV or "PRO_SE"
-                        ),
-                        "jurisdiction": str(selections.get("jurisdiction_code") or ""),
-                        "case_category": str(selections.get("case_category_code") or ""),
-                        "case_type": str(selections.get("case_type_code") or ""),
-                        "provider_tax": str(selections.get("provider_tax") or "0"),
-                        "provider_fee": str(selections.get("provider_fee") or "0"),
-                        "filing_type": str(
-                            selections.get("filing_type") or "EFileAndServe"
-                        ),
-                        "filing_state": state_code,
-                        "case_parties": case_parties,
-                    }
-                )
-            if not data.get("jurisdiction") or not data.get("case_category") or not data.get("case_type"):
-                raise ValueError(
-                    "New-case filing requires jurisdiction, case category, and case type codes."
-                )
-            if not data.get("case_parties"):
-                raise ValueError(
-                    "New-case filing requires case party details. "
-                    "Provide selections.efile_case_parties or party type data."
-                )
-
         return {"data": data}
 
     async def submit(

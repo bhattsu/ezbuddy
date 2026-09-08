@@ -21,6 +21,7 @@ from app.agents.conversation.orchestration.helpers import (
     apply_existing_search_attrs,
     attach_selection_options_to_result,
     build_checklist_from_questions,
+    cache_phase_options,
     capture_new_case_topic,
     get_session,
     handle_lookup,
@@ -709,6 +710,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             mode=session.mode,
             bedrock=ctx.bedrock,
         )
+        cache_phase_options(session, session.phase, db_options)
 
         # Resolve the choice locally first. Option lists can hold hundreds of
         # rows (914 Texas courts), which is too many to send to the LLM, so an

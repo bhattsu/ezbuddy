@@ -660,7 +660,6 @@
                 <input type="file" id="fileInput" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
               </label>
               <button type="button" class="btn ghost" id="btnClearFile" style="padding:8px 12px;">Clear</button>
-              <button type="button" class="btn ghost" id="btnAnalyze" style="padding:8px 12px;">Analyze file</button>
             </div>
           </div>
           <div class="input-row">
@@ -1303,33 +1302,6 @@
         }
       }
 
-      async function analyzeOnly() {
-        if (!selectedFiles.length) {
-          setStatus("Choose a PDF/DOCX first.", "error");
-          return;
-        }
-        const form = new FormData();
-        form.append("file", selectedFiles[0]);
-        setTyping(true);
-        setStatus("Analyzing document via /api/analyze…");
-        try {
-          const res = await fetch(`${apiBase}/api/analyze`, { method: "POST", body: form });
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          setTyping(false);
-          addBubble(
-            "assistant",
-            `Document analysis (${data.document_classification || "document"})\n` +
-              `Missing fields: ${(data.missing_fields || []).join(", ") || "none"}\n\n` +
-              JSON.stringify(data.user_details || {}, null, 2)
-          );
-          setStatus("Analysis complete.", "ok");
-        } catch (err) {
-          setTyping(false);
-          setStatus(err.message || String(err), "error");
-        }
-      }
-
       function saveApiBaseAndReconnect() {
         apiBase = (els.loginApiBase.value || els.apiBase.value || DEFAULT_API).trim().replace(/\/$/, "");
         localStorage.setItem("uslp_api_base", apiBase);
@@ -1347,7 +1319,6 @@
         if (e.key === "Enter") performLogin();
       });
       document.getElementById("btnSend").addEventListener("click", sendMessage);
-      document.getElementById("btnAnalyze").addEventListener("click", analyzeOnly);
       document.getElementById("btnReconnect").addEventListener("click", saveApiBaseAndReconnect);
       document.getElementById("btnNewChat").addEventListener("click", () => {
         conversationId = null;
