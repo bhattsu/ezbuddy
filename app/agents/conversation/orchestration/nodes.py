@@ -62,8 +62,8 @@ from app.agents.utils.workflow_batch import (
     format_next_form_question_message,
     list_all_pending_questions,
 )
+from app.adapters.uslegalpro.tokens import resolve_auth_token
 from app.api.schemas.filing_events import FilingMode, FilingPhase
-from app.config.settings import settings
 from app.core.prompts.document_offer import DOCUMENT_OFFER_USER_MESSAGE
 from app.core.prompts.filing_assistant import (
     GREETING_USER_MESSAGE,
@@ -832,19 +832,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     if ctx.user_repo
                     else None
                 )
-                # USLEGALPRO_AUTH_TOKEN overrides the stored session so a known
-                # good token can be used while the logged-in user's has expired.
-                configured_token = str(settings.USLEGALPRO_AUTH_TOKEN or "").strip()
-                stored_token = str((user_row or {}).get("auth_token") or "")
-                auth_token = configured_token or stored_token
-                if not auth_token:
-                    raise RuntimeError(
-                        "No US Legal Pro authentication token is available. "
-                        "Please sign in again."
-                    )
+                auth_token = resolve_auth_token(user_row)
                 logger.info(
-                    "Existing-case auth token source=%s platform_user=%s",
-                    "settings" if configured_token else "operational.users",
+                    "Existing-case auth token source=operational.users platform_user=%s",
                     auth_token.split("/")[0],
                 )
 
@@ -872,12 +862,8 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                         raise RuntimeError(
                             "The case search response did not include a case tracking ID."
                         )
-                    detail_link = (
-                        ((search_item.get("link") or {}).get("case_detail") or {}).get(
-                            "link"
-                        )
-                        if isinstance(search_item.get("link"), dict)
-                        else ""
+                    detail_link = ctx.existing_case_service.case_detail_link(
+                        search_item
                     )
                     # Case detail is restricted for some account types, so the
                     # search result alone is enough to confirm the case.
@@ -890,7 +876,10 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                                 state_code=state_code,
                                 case_tracking_id=tracking_id,
                                 auth_token=auth_token,
-                                case_detail_url=str(detail_link or ""),
+                                case_detail_link=detail_link,
+                                case_detail_url=str(
+                                    detail_link.get("link") or ""
+                                ),
                             )
                         )
                         case_detail = ctx.existing_case_service.detail_item(
