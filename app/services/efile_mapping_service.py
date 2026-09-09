@@ -12,6 +12,7 @@ from app.adapters.llm.bedrock import Bedrock, get_bedrock
 from app.core.prompts.context import format_llm_prompt
 from app.core.prompts.efile_mapping import (
     EFILE_MAPPING_PROMPT,
+    EFILE_PARTY_NAME_MAPPING_PROMPT,
     EXISTING_CASE_EFILE_MAPPING_PROMPT,
 )
 
@@ -848,6 +849,129 @@ class EfileMappingLLMOutput(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
 
 
+class MappedPartyName(BaseModel):
+    id: str = ""
+    type: str = ""
+    first_name: str = ""
+    last_name: str = ""
+
+
+class PartyNameMappingLLMOutput(BaseModel):
+    parties: List[MappedPartyName] = Field(default_factory=list)
+
+
+_NAME_MAPPING_SKIP_SELECTION_KEYS = {
+    "efile_code_bundle",
+    "efile_payload_preview",
+    "efile_payload_override",
+    "efile_case_parties",
+    "efile_filings",
+    "court_payment_accounts",
+    "court_payment_account",
+    "case_details",
+    "case_metadata",
+}
+
+
+def party_needs_person_name(party: Dict[str, Any]) -> bool:
+    if not isinstance(party, dict):
+        return False
+    if party.get("is_business") is True:
+        return False
+    return not _text(party.get("first_name")) or not _text(party.get("last_name"))
+
+
+def _normalize_mapped_person_name(first: Any, last: Any) -> tuple[str, str]:
+    first_s = _text(first)
+    last_s = _text(last)
+    if first_s and not last_s and " " in first_s:
+        return _split_name(first_s)
+    if last_s and not first_s and " " in last_s:
+        return _split_name(last_s)
+    return first_s, last_s
+
+
+def overlay_mapped_party_names(
+    parties: List[Dict[str, Any]],
+    mapped: Any,
+) -> List[Dict[str, Any]]:
+    """Copy LLM first/last names onto parties that are still missing them."""
+    rows: List[Dict[str, Any]] = []
+    if isinstance(mapped, dict):
+        raw = mapped.get("parties") or mapped.get("case_parties") or []
+        if isinstance(raw, list):
+            rows = [dict(row) for row in raw if isinstance(row, dict)]
+    elif isinstance(mapped, list):
+        rows = [dict(row) for row in mapped if isinstance(row, dict)]
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    by_type: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        pid = _text(row.get("id"))
+        ptype = _text(row.get("type"))
+        if pid:
+            by_id[pid] = row
+        if ptype and ptype not in by_type:
+            by_type[ptype] = row
+
+    used_types: set[str] = set()
+    for party in parties:
+        if not isinstance(party, dict) or not party_needs_person_name(party):
+            continue
+        src = by_id.get(_text(party.get("id")))
+        party_type = _text(party.get("type"))
+        if src is None and party_type and party_type not in used_types:
+            src = by_type.get(party_type)
+        if not src:
+            continue
+        if party_type:
+            used_types.add(party_type)
+        first, last = _normalize_mapped_person_name(
+            src.get("first_name"), src.get("last_name")
+        )
+        if not _text(party.get("first_name")) and first:
+            party["first_name"] = first
+        if not _text(party.get("last_name")) and last:
+            party["last_name"] = last
+    return parties
+
+
+def slim_session_hints_for_names(selections: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    hints: Dict[str, Any] = {}
+    for key, value in dict(selections or {}).items():
+        if key in _NAME_MAPPING_SKIP_SELECTION_KEYS:
+            continue
+        if isinstance(value, (dict, list)):
+            continue
+        text = _text(value)
+        if text:
+            hints[str(key)] = text
+    return hints
+
+
+def parties_for_name_mapping(
+    parties: List[Dict[str, Any]],
+    *,
+    bundle: Any = None,
+) -> List[Dict[str, Any]]:
+    compact: List[Dict[str, Any]] = []
+    for party in parties or []:
+        if not isinstance(party, dict):
+            continue
+        code = _text(party.get("type"))
+        compact.append(
+            {
+                "id": _text(party.get("id")),
+                "type": code,
+                "type_name": _party_type_name_for(bundle, code) if bundle else "",
+                "is_business": bool(party.get("is_business")),
+                "first_name": _text(party.get("first_name")),
+                "last_name": _text(party.get("last_name")),
+            }
+        )
+    return compact
+
+
 def mapped_form_data_from_documents(
     generated_documents: Optional[List[Dict[str, Any]]],
 ) -> Dict[str, Any]:
@@ -983,6 +1107,54 @@ class EfileMappingService:
             workflow_questions=workflow_questions,
         )
 
+    async def map_party_names(
+        self,
+        *,
+        parties: List[Dict[str, Any]],
+        collected_answers: Dict[str, Any],
+        form_data: Dict[str, Any],
+        workflow_questions: Optional[List[Any]] = None,
+        session_hints: Optional[Dict[str, Any]] = None,
+        bundle: Any = None,
+    ) -> Dict[str, Any]:
+        prompt = format_llm_prompt(
+            EFILE_PARTY_NAME_MAPPING_PROMPT,
+            parties_json=json.dumps(
+                parties_for_name_mapping(parties, bundle=bundle), default=str
+            )[:12000],
+            collected_answers_json=json.dumps(
+                collected_answers or {}, default=str
+            )[:12000],
+            form_data_json=json.dumps(form_data or {}, default=str)[:12000],
+            workflow_questions_json=json.dumps(
+                list(workflow_questions or []), default=str
+            )[:12000],
+            session_hints_json=json.dumps(session_hints or {}, default=str)[:8000],
+        )
+        try:
+            parsed = await self.bedrock.invoke_structured_prompt(
+                prompt, PartyNameMappingLLMOutput
+            )
+            return {
+                "parties": [
+                    row.model_dump()
+                    if hasattr(row, "model_dump")
+                    else row.dict()
+                    for row in (parsed.parties or [])
+                ]
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Party-name mapping structured invoke failed: %s", exc)
+
+        mapped = await self._ask_llm_raw(prompt)
+        if isinstance(mapped.get("parties"), list):
+            return {"parties": mapped["parties"]}
+        if isinstance(mapped.get("data"), dict) and isinstance(
+            mapped["data"].get("case_parties"), list
+        ):
+            return {"parties": mapped["data"]["case_parties"]}
+        return {}
+
     async def _map(
         self,
         prompt_template: str,
@@ -1021,7 +1193,9 @@ class EfileMappingService:
             return {"data": dict(parsed.data or {})}
         except Exception as exc:  # noqa: BLE001
             logger.warning("E-file mapping structured invoke failed: %s", exc)
+        return await self._ask_llm_raw(prompt)
 
+    async def _ask_llm_raw(self, prompt: str) -> Dict[str, Any]:
         try:
             body = {
                 "anthropic_version": "bedrock-2023-05-31",

@@ -485,6 +485,14 @@ class USLegalProEFileService:
             bundle = await self._bundle_from_selections(
                 selections, generated_documents, override_data=override.get("data")
             )
+            await self._fill_missing_party_names_with_llm(
+                override,
+                selections=selections,
+                collected_answers=collected_answers,
+                generated_documents=generated_documents,
+                workflow_questions=workflow_questions,
+                bundle=bundle,
+            )
             await resolve_filing_sizes(override)
             route_state = str(selections.get("state_code") or "").strip().lower() or None
             validate_new_case_payload(
@@ -508,6 +516,14 @@ class USLegalProEFileService:
             reference_id=reference_id,
         )
         payload = {"data": data}
+        await self._fill_missing_party_names_with_llm(
+            payload,
+            selections=selections,
+            collected_answers=collected_answers,
+            generated_documents=generated_documents,
+            workflow_questions=workflow_questions,
+            bundle=bundle,
+        )
         # Resolve missing filing sizes over HTTP before the validator asserts
         # that ``filings[i].size`` is a positive integer. The document
         # generation API only returns a download URL, so this is the earliest
@@ -520,6 +536,49 @@ class USLegalProEFileService:
         # Cache the bundle so the confirm step reuses it instead of re-walking.
         selections["efile_code_bundle"] = bundle.to_serializable()
         return payload
+
+    async def _fill_missing_party_names_with_llm(
+        self,
+        payload: Dict[str, Any],
+        *,
+        selections: Dict[str, Any],
+        collected_answers: Dict[str, Any],
+        generated_documents: List[Dict[str, Any]],
+        workflow_questions: Optional[List[Any]],
+        bundle: Any = None,
+    ) -> None:
+        """Fill empty party first/last names from chat/form data. Codes stay as-is."""
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        if not isinstance(data, dict):
+            return
+        parties = data.get("case_parties")
+        if not isinstance(parties, list) or not parties:
+            return
+        from app.services.efile_mapping_service import (
+            mapped_form_data_from_documents,
+            overlay_mapped_party_names,
+            party_needs_person_name,
+            slim_session_hints_for_names,
+        )
+
+        if not any(party_needs_person_name(row) for row in parties if isinstance(row, dict)):
+            return
+        mapper = getattr(self.mapping_service, "map_party_names", None)
+        if mapper is None:
+            return
+        try:
+            mapped = await mapper(
+                parties=parties,
+                collected_answers=collected_answers or {},
+                form_data=mapped_form_data_from_documents(generated_documents),
+                workflow_questions=workflow_questions,
+                session_hints=slim_session_hints_for_names(selections),
+                bundle=bundle,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Party-name LLM mapping failed: %s", exc)
+            return
+        overlay_mapped_party_names(parties, mapped)
 
     async def submit(
         self,

@@ -79,3 +79,47 @@ Return JSON only:
   "data": {{}}
 }}
 """
+
+EFILE_PARTY_NAME_MAPPING_PROMPT = """You fill missing person names on NEW-case e-file parties.
+
+Only map first_name and last_name. Do not change party ids, types, addresses,
+attorneys, codes, filings, or any other payload field.
+
+## Parties that still need a person name
+{parties_json}
+
+## User answers collected during chat
+{collected_answers_json}
+
+## Mapped form data from the generated court document
+{form_data_json}
+
+## Workflow questions
+{workflow_questions_json}
+
+## Other available session text
+{session_hints_json}
+
+Rules:
+- Return JSON with a "parties" array. Each item must include the same "id"
+  as the input party (and "type" when you know it).
+- Fill first_name and last_name only from the provided answers, form data,
+  questions, or session text. Split a full name when needed.
+- Match names to the party role (petitioner/plaintiff vs respondent/defendant).
+- Do not invent people. If a name is not in the data, use "".
+- Do not copy sample names such as JANE DOE or JOHN DOE unless those exact
+  names appear in the provided data.
+- Leave business parties with empty first_name and last_name.
+
+Return JSON only:
+{{
+  "parties": [
+    {{
+      "id": "Party_1",
+      "type": "",
+      "first_name": "",
+      "last_name": ""
+    }}
+  ]
+}}
+"""
