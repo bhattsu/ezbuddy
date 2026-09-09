@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.api.endpoints import (
     auth,
     chatbot,
+    conversations,
     court_form_questions,
     court_rules,
     document_analysis,
@@ -21,6 +22,13 @@ all_routes.include_router(chatbot.router, prefix="/chatbot", tags=["Chatbot"])
 
 # Platform login (US Legal Pro)
 all_routes.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+
+# Conversation history
+all_routes.include_router(
+    conversations.router,
+    prefix="/api/conversations",
+    tags=["Conversations"],
+)
 
 # Court document analysis (uploaded PDF → filled / blank fields)
 all_routes.include_router(
@@ -56,6 +64,9 @@ async def root():
                 "login": "/auth/login",
                 "websocket": "/chatbot/ws",
                 "test_ui": "chatbot_test.html (project root — open in browser)",
+            },
+            "conversations": {
+                "user_messages": "/api/conversations/user-messages",
             },
             "document_analysis": {
                 "analyze": "/api/analyze",

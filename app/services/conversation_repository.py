@@ -25,6 +25,7 @@ SQL_INSERT_SYSTEM_MESSAGE = get_sql("conversations.insert_system_message")
 SQL_COMPLETE_CONVERSATION = get_sql("conversations.complete_conversation")
 SQL_INSERT_ATTACHMENT = get_sql("conversations.insert_attachment")
 SQL_LIST_ATTACHMENTS = get_sql("conversations.list_attachments")
+SQL_FETCH_USER_MESSAGES_BY_USER_ID = get_sql("conversations.fetch_user_messages_by_user_id")
 
 
 class ConversationRepository:
@@ -113,6 +114,11 @@ class ConversationRepository:
 
     async def list_attachments(self, conversation_id: str) -> List[Dict[str, Any]]:
         return await self._safe_fetch(SQL_LIST_ATTACHMENTS, conversation_id)
+
+    async def get_user_messages_by_user_id(
+        self, user_id: str
+    ) -> List[Dict[str, Any]]:
+        return await self._safe_fetch(SQL_FETCH_USER_MESSAGES_BY_USER_ID, user_id)
 
     @staticmethod
     def history_to_llm_messages(
