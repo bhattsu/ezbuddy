@@ -30,9 +30,6 @@ requests-aws4auth>=1.2.3
 # LangGraph for Agentic RAG
 langgraph>=0.0.40
 
-# Embeddings and Reranking
-sentence-transformers>=2.2.0
-
 # Document Processing (RAG + IDP)
 PyPDF2>=3.0.0
 pypdf>=4.0.0
