@@ -24,21 +24,29 @@ def route_entry(state: FilingGraphState) -> Literal["connect", "message_prepare"
 
 def route_after_message_prepare(
     state: FilingGraphState,
-) -> Literal["offer_documents", "workflow", "navigation"]:
+) -> Literal["offer_documents", "workflow", "verify_payment", "navigation"]:
     phase = state.get("phase") or ""
     if phase in _OFFER_PHASES:
         return "offer_documents"
     if phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS.value:
         return "workflow"
+    if phase in {
+        FilingPhase.VERIFYING_PLATFORM_PAYMENT.value,
+        FilingPhase.VERIFYING_COURT_PAYMENT.value,
+        FilingPhase.CONFIRMING_EFILE.value,
+    }:
+        return "verify_payment"
     return "navigation"
 
 
 def route_after_navigation(
     state: FilingGraphState,
-) -> Literal["init_workflow", "workflow", "case_located", "persist"]:
+) -> Literal["init_workflow", "offer_documents", "workflow", "case_located", "persist"]:
     next_node = state.get("next_node") or "persist"
     if next_node == "init_workflow":
         return "init_workflow"
+    if next_node == "offer_documents":
+        return "offer_documents"
     if next_node == "workflow":
         return "workflow"
     if next_node == "case_located":

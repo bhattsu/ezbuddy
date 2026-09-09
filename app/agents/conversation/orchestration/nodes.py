@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,6 +21,7 @@ from app.agents.conversation.orchestration.helpers import (
     apply_existing_search_attrs,
     attach_selection_options_to_result,
     build_checklist_from_questions,
+    cache_phase_options,
     capture_new_case_topic,
     get_session,
     handle_lookup,
@@ -46,6 +48,7 @@ from app.agents.conversation.orchestration.state import (
     OrchestratorResult,
 )
 from app.agents.conversation.orchestration.document_nodes import build_document_nodes
+from app.agents.conversation.orchestration.payment_nodes import build_payment_nodes
 from app.agents.utils.db_options_format import (
     build_phase_selection_message,
     filter_selections_update,
@@ -60,8 +63,8 @@ from app.agents.utils.workflow_batch import (
     format_next_form_question_message,
     list_all_pending_questions,
 )
+from app.adapters.uslegalpro.tokens import resolve_auth_token
 from app.api.schemas.filing_events import FilingMode, FilingPhase
-from app.config.settings import settings
 from app.core.prompts.document_offer import DOCUMENT_OFFER_USER_MESSAGE
 from app.core.prompts.filing_assistant import (
     GREETING_USER_MESSAGE,
@@ -78,6 +81,7 @@ from app.services.process_notifications import loading_process_for_phase
 logger = logging.getLogger(__name__)
 
 NodeFn = Callable[[FilingGraphState], Any]
+_ENVELOPE_ID_RE = re.compile(r"\b[A-Za-z0-9_-]{3,64}\b")
 
 
 def _session_snapshot(session: FilingSession) -> Dict[str, str]:
@@ -167,6 +171,106 @@ def _format_existing_case_confirmation(
     )
 
 
+def _extract_envelope_id(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    numeric = re.findall(r"\b\d{4,}\b", raw)
+    if numeric:
+        return numeric[-1]
+    tokens = _ENVELOPE_ID_RE.findall(raw)
+    return tokens[-1] if tokens else ""
+
+
+def _envelope_status_message(item: Dict[str, Any], envelope_id: str) -> str:
+    status = str(item.get("status") or item.get("envelope_status") or "unknown").strip()
+    submitted_on = str(item.get("submitted_on") or "").strip()
+    case_number = str(item.get("case_number") or "").strip()
+    reason = str(item.get("status_reason") or item.get("reviewer_comment") or "").strip()
+    parts = [f"The filing envelope {envelope_id} is currently {status}."]
+    if submitted_on:
+        parts.append(f"It was submitted on {submitted_on}.")
+    if case_number:
+        parts.append(f"Case number: {case_number}.")
+    filings = item.get("filings")
+    if isinstance(filings, list) and filings:
+        filing_states = [
+            str(row.get("status") or "").strip()
+            for row in filings
+            if isinstance(row, dict) and str(row.get("status") or "").strip()
+        ]
+        if filing_states:
+            parts.append("Document statuses: " + ", ".join(filing_states) + ".")
+    if reason:
+        parts.append(f"Court note: {reason}.")
+    return " ".join(parts)
+
+
+async def _handle_status_check(
+    ctx: FilingOrchestratorContext,
+    session: FilingSession,
+    user_message: str,
+    lookup_params: Dict[str, Any],
+) -> tuple[str, Dict[str, Any]]:
+    envelope_id = str(
+        lookup_params.get("envelope_id")
+        or session.selections.get("envelope_id")
+        or _extract_envelope_id(user_message)
+    ).strip()
+    if not envelope_id:
+        return "Please share the envelope ID so I can check your filing status.", {}
+    state_code = str(session.selections.get("state_code") or "").strip().lower()
+    if not state_code:
+        return (
+            "I need the filing state to check envelope status. "
+            "Please share the state code as well.",
+            {},
+        )
+
+    await ctx.notify("checking_envelope_status")
+    fields = (
+        "submitter(full_name,submitter_uslp_id),submitted_on,envelope_fees,status,"
+        "client_matter_number,case_number,case_tracking_id,"
+        "filings(file_name,original_document,stamped_document,reviewer_comment,status_reason,status)"
+    )
+    response = await ctx.efile_service.envelope_status(
+        user_id=session.user_id,
+        state_code=state_code,
+        envelope_id=envelope_id,
+        fields=fields,
+    )
+    item = response.get("item")
+    if not isinstance(item, dict):
+        items = response.get("items")
+        if isinstance(items, list) and items and isinstance(items[0], dict):
+            item = dict(items[0])
+        else:
+            item = {}
+    message = _envelope_status_message(item, envelope_id)
+    status = str(item.get("status") or item.get("envelope_status") or "PENDING")
+    session.selections["envelope_id"] = envelope_id
+    session.selections["envelope_status"] = status
+    if item.get("case_tracking_id"):
+        session.selections["case_tracking_id"] = item.get("case_tracking_id")
+
+    conv = await ctx.conversation_repo.get_conversation(session.conversation_id)
+    session_id = str((conv or {}).get("session_id") or "").strip()
+    submission = None
+    if session_id:
+        submission = await ctx.submission_repo.latest_for_session(session_id)
+    if submission is None and session.selections.get("reference_id"):
+        submission = await ctx.submission_repo.by_reference(
+            str(session.selections.get("reference_id"))
+        )
+    if submission and submission.get("submission_id"):
+        await ctx.submission_repo.update_submission_status(
+            submission_id=str(submission.get("submission_id")),
+            submission_status=status,
+            response_message={"envelope_id": envelope_id, "status_response": response},
+        )
+    return message, {"envelope_status": status, "envelope_id": envelope_id}
+
+
 def _append_party_to_session(session: FilingSession, validated: Dict[str, Any]) -> None:
     """
     If the LLM returned a ``party`` dict in the validated update, append it to
@@ -235,6 +339,7 @@ async def _hydrate_template_questions(
         template_id = str(chosen.get("template_id") or chosen.get("id") or template_id)
         session.selections["template_id"] = template_id
         session.selections["field_mapping"] = chosen.get("field_mapping") or ""
+        session.selections["cached_field_mapping"] = session.selections["field_mapping"]
         if chosen.get("s3_bucket"):
             session.selections["s3_bucket"] = chosen["s3_bucket"]
         if chosen.get("s3_key"):
@@ -248,6 +353,12 @@ async def _hydrate_template_questions(
         return (
             "I could not match that document type to a template. "
             "Please choose one of the listed document types."
+        )
+    if not str(session.selections.get("field_mapping") or "").strip():
+        return (
+            "The selected document template has no field_mapping, "
+            "so I cannot ask only the related questions. "
+            "Please choose a different document type."
         )
 
     version = await ctx.filing_repo.get_latest_template_version(str(template_id))
@@ -268,6 +379,13 @@ async def _hydrate_template_questions(
     session.selections["s3_key"] = s3_key
     if version and version.get("template_version_id"):
         session.selections["template_version_id"] = str(version["template_version_id"])
+    stored_version = None
+    if version is not None and version.get("version") not in (None, ""):
+        stored_version = version.get("version")
+    elif chosen and chosen.get("version") not in (None, ""):
+        stored_version = chosen.get("version")
+    if stored_version not in (None, ""):
+        session.selections["template_version"] = stored_version
 
     from app.api.schemas.document import FileType
     from app.services.court_form_question_service import CourtFormQuestionService
@@ -294,9 +412,16 @@ async def _hydrate_template_questions(
 
     await ctx.notify("loading_questions")
     template_questions, prefilled = template_questions_to_workflow(extracted.questions)
+    mapping_text = str(
+        session.selections.get("cached_field_mapping")
+        or session.selections.get("field_mapping")
+        or ""
+    )
+    session.selections["field_mapping"] = mapping_text
+    session.selections["cached_field_mapping"] = mapping_text
     questions = merge_document_and_mapping_questions(
         template_questions,
-        str(session.selections.get("field_mapping") or ""),
+        mapping_text,
     )
     if not questions:
         return (
@@ -306,7 +431,18 @@ async def _hydrate_template_questions(
 
     session.workflow_questions = questions
     session.checklist = build_checklist_from_questions(None, questions)
-    session.collected_answers.update(prefilled)
+    remapped_prefill = {}
+    for question in questions:
+        name = str(question.get("field_name") or "")
+        if not name:
+            continue
+        if name in prefilled:
+            remapped_prefill[name] = prefilled[name]
+            continue
+        slug = name.lower().replace("-", "_")
+        if slug in prefilled:
+            remapped_prefill[name] = prefilled[slug]
+    session.collected_answers.update(remapped_prefill)
     known_answers, skipped_fields = apply_known_case_answers(
         questions, session.selections
     )
@@ -574,6 +710,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             mode=session.mode,
             bedrock=ctx.bedrock,
         )
+        cache_phase_options(session, session.phase, db_options)
 
         # Resolve the choice locally first. Option lists can hold hundreds of
         # rows (914 Texas courts), which is too many to send to the LLM, so an
@@ -697,19 +834,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     if ctx.user_repo
                     else None
                 )
-                # USLEGALPRO_AUTH_TOKEN overrides the stored session so a known
-                # good token can be used while the logged-in user's has expired.
-                configured_token = str(settings.USLEGALPRO_AUTH_TOKEN or "").strip()
-                stored_token = str((user_row or {}).get("auth_token") or "")
-                auth_token = configured_token or stored_token
-                if not auth_token:
-                    raise RuntimeError(
-                        "No US Legal Pro authentication token is available. "
-                        "Please sign in again."
-                    )
+                auth_token = resolve_auth_token(user_row)
                 logger.info(
-                    "Existing-case auth token source=%s platform_user=%s",
-                    "settings" if configured_token else "operational.users",
+                    "Existing-case auth token source=operational.users platform_user=%s",
                     auth_token.split("/")[0],
                 )
 
@@ -737,12 +864,8 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                         raise RuntimeError(
                             "The case search response did not include a case tracking ID."
                         )
-                    detail_link = (
-                        ((search_item.get("link") or {}).get("case_detail") or {}).get(
-                            "link"
-                        )
-                        if isinstance(search_item.get("link"), dict)
-                        else ""
+                    detail_link = ctx.existing_case_service.case_detail_link(
+                        search_item
                     )
                     # Case detail is restricted for some account types, so the
                     # search result alone is enough to confirm the case.
@@ -755,7 +878,10 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                                 state_code=state_code,
                                 case_tracking_id=tracking_id,
                                 auth_token=auth_token,
-                                case_detail_url=str(detail_link or ""),
+                                case_detail_link=detail_link,
+                                case_detail_url=str(
+                                    detail_link.get("link") or ""
+                                ),
                             )
                         )
                         case_detail = ctx.existing_case_service.detail_item(
@@ -804,6 +930,34 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
 
         phase_before = session.phase
         lookup_action = None if existing_api_handled else llm_out.get("lookup_action")
+        if lookup_action == "check_status":
+            try:
+                status_message, status_meta = await _handle_status_check(
+                    ctx,
+                    session,
+                    user_message,
+                    llm_out.get("lookup_params") or {},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Envelope status check failed")
+                status_message = (
+                    "I could not retrieve the envelope status right now. "
+                    f"Please try again in a moment. {exc}"
+                )
+                status_meta = {}
+            await persist_system_state(ctx.conversation_repo, session)
+            result = result_from_session(
+                session,
+                status_message,
+                event_kind="assistant.message",
+                metadata=status_meta,
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
         if lookup_action == "party_search":
             await ctx.notify("existing_search_party")
         elif lookup_action == "date_search":
@@ -924,6 +1078,11 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             next_node = "init_workflow"
         elif (
             phase_before == FilingPhase.SELECTING_DOCUMENT_TYPE
+            and session.phase == FilingPhase.OFFERING_DOCUMENTS
+        ):
+            next_node = "offer_documents"
+        elif (
+            phase_before == FilingPhase.SELECTING_DOCUMENT_TYPE
             and session.phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS
         ):
             assistant_message = format_next_form_question_message(
@@ -948,6 +1107,18 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "assistant_message": assistant_message,
                 "skip_user_persist": skip_user_persist,
                 "next_node": "init_workflow",
+            }
+
+        if next_node == "offer_documents":
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "phase_before": phase_before.value,
+                "assistant_message": assistant_message,
+                "skip_user_persist": skip_user_persist,
+                "user_message": "[document_offer]",
+                "next_node": "offer_documents",
             }
 
         if next_node == "case_located":
@@ -1255,4 +1426,5 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         "workflow": workflow_node,
         "persist": persist_node,
         **build_document_nodes(ctx),
+        **build_payment_nodes(ctx),
     }

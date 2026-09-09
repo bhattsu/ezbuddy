@@ -5,8 +5,6 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.config.settings import settings
-
 
 def parse_auth_token(auth_token: str) -> tuple[str, str, str]:
     """
@@ -41,12 +39,12 @@ def resolve_auth_token(
 ) -> str:
     """Return the auth token to use for authenticated US Legal Pro API calls.
 
-    Prefers ``override`` or ``USLEGALPRO_AUTH_TOKEN`` (for local/dev), then the
-    token stored on ``operational.users``.
+    Uses the token stored on ``operational.users``. An explicit ``override`` is
+    supported for tests only; ``USLEGALPRO_AUTH_TOKEN`` from settings is not used.
     """
-    configured = str(override or settings.USLEGALPRO_AUTH_TOKEN or "").strip()
-    if configured:
-        return configured
+    explicit = str(override or "").strip()
+    if explicit:
+        return explicit
     stored = str((user_row or {}).get("auth_token") or "").strip()
     if not stored:
         raise ValueError(

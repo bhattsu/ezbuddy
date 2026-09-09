@@ -173,9 +173,82 @@ def template_questions_to_workflow(
 
 
 def _humanize_mapping_source(name: str) -> str:
-    cleaned = re.sub(r"^_+|_+$", "", str(name or ""))
+    key = str(name or "").strip()
+    if key == "$email":
+        return "What is your email address?"
+    cleaned = re.sub(r"^_+|_+$", "", key)
     cleaned = cleaned.replace("_", " ").strip()
     return cleaned[:1].upper() + cleaned[1:].lower() if cleaned else name
+
+
+_YES_NO_FIELDS = frozenset(
+    {
+        "CHILDREN",
+        "DRIVER_LICENSE",
+        "SOCIAL_SECURITY_NUMBER",
+        "LEGAL_NOTICE",
+        "PROTECTIVE_ORDER",
+        "NAME_CHANGE",
+        "DOMICILE",
+    }
+)
+_FOLLOW_UP_GATES = {
+    "DRIVER_LICENSE": (
+        "LICENSE_NUMBER",
+        "LICENSE_ISSUE_STATE",
+    ),
+    "SOCIAL_SECURITY_NUMBER": ("SOCIAL_SECURITY_NUMBER_LAST_THREE_DIGIT",),
+    "PROTECTIVE_ORDER": (
+        "PROTECTIVE_ORDER_CASE_NUMBER",
+        "PROTECTIVE_ORDER_DATE",
+        "PROTECTIVE_ORDER_COUNTY",
+        "PROTECTIVE_ORDER_STATE",
+    ),
+    "NAME_CHANGE": (
+        "NAME_CHANGE_TO_FIRST",
+        "NAME_CHANGE_TO_MIDDLE",
+        "NAME_CHANGE_TO_LAST",
+    ),
+}
+
+
+def _mapping_stem(name: str) -> str:
+    return re.sub(r"^_+", "", str(name or "")).upper()
+
+
+def attach_mapping_visibility(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hide follow-up fields until the user answers the related yes/no gate."""
+    present = {_mapping_stem(row.get("field_name") or "") for row in questions}
+    gate_fields = {
+        stem: next(
+            (
+                str(row.get("field_name") or "")
+                for row in questions
+                if _mapping_stem(row.get("field_name") or "") == stem
+            ),
+            stem,
+        )
+        for stem in _FOLLOW_UP_GATES
+        if stem in present
+    }
+    for row in questions:
+        stem = _mapping_stem(row.get("field_name") or "")
+        if stem in _YES_NO_FIELDS:
+            row["question_type"] = "BOOLEAN"
+        for gate, dependents in _FOLLOW_UP_GATES.items():
+            if stem in dependents and gate in gate_fields:
+                row["visibility_condition"] = {gate_fields[gate]: "yes"}
+        if "CHILD" in stem and stem != "CHILDREN" and "CHILDREN" in present:
+            children_field = next(
+                (
+                    str(item.get("field_name") or "")
+                    for item in questions
+                    if _mapping_stem(item.get("field_name") or "") == "CHILDREN"
+                ),
+                "CHILDREN",
+            )
+            row["visibility_condition"] = {children_field: "yes"}
+    return questions
 
 
 def merge_document_and_mapping_questions(
@@ -215,38 +288,34 @@ def merge_document_and_mapping_questions(
         )
 
     for index, source in enumerate(sources, start=1):
+        if source in used:
+            continue
+        used.add(source)
         match_idx = next(
             (idx for idx, row in enumerate(leftover) if _matches(row, source)),
             None,
         )
         if match_idx is not None:
-            row = leftover.pop(match_idx)
-            field_name = str(row.get("field_name") or source)
-            if field_name in used:
-                continue
-            used.add(field_name)
-            row = dict(row)
+            row = dict(leftover.pop(match_idx))
+            row["field_name"] = source
             row.setdefault("pdf_field", source)
             row["mapping_source"] = source
+            row["sort_order"] = index
             merged.append(row)
             continue
-        field_name = re.sub(r"[^a-z0-9]+", "_", source.lower()).strip("_") or f"field_{index}"
-        if field_name in used:
-            continue
-        used.add(field_name)
         merged.append(
             {
-                "field_name": field_name,
+                "field_name": source,
                 "field_label": _humanize_mapping_source(source),
                 "pdf_field": source,
                 "question": _humanize_mapping_source(source),
                 "required": True,
                 "sort_order": index,
-                "question_type": "text",
+                "question_type": "email" if source == "$email" else "text",
                 "mapping_source": source,
             }
         )
-    return merged
+    return attach_mapping_visibility(merged)
 
 
 _CHILD_HINTS = (
@@ -361,6 +430,9 @@ def apply_known_case_answers(
         if not name:
             continue
         label = _label_text(question)
+        if skip_children and _mapping_stem(name) == "CHILDREN":
+            answers.setdefault(name, "no")
+            continue
         if skip_children and any(hint in label for hint in _CHILD_HINTS):
             skipped.append(name)
             continue

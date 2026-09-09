@@ -13,13 +13,21 @@ from app.services.conversation_repository import ConversationRepository
 from app.services.court_rules_service import CourtRulesService
 from app.services.document_analysis_service import DocumentAnalysisService
 from app.services.document_generation_service import DocumentGenerationService
+from app.services.filing_submission_repository import FilingSubmissionRepository
 from app.services.legal_filing_repository import LegalFilingRepository
 from app.services.operational_user_repository import OperationalUserRepository
 from app.services.uslegalpro_codes_service import USLegalProCodesService
+from app.services.uslegalpro_efile_service import USLegalProEFileService
 from app.services.uslegalpro_existing_case_service import (
     USLegalProExistingCaseService,
 )
 from app.utils.s3_utils import S3Manager
+
+
+def _efile_mapping_service(bedrock: Bedrock):
+    from app.services.efile_mapping_service import EfileMappingService
+
+    return EfileMappingService(bedrock=bedrock)
 
 
 @dataclass
@@ -37,6 +45,12 @@ class FilingOrchestratorContext:
     court_rules_service: CourtRulesService
     codes_service: USLegalProCodesService = field(
         default_factory=USLegalProCodesService
+    )
+    efile_service: USLegalProEFileService = field(
+        default_factory=USLegalProEFileService
+    )
+    submission_repo: FilingSubmissionRepository = field(
+        default_factory=FilingSubmissionRepository
     )
     existing_case_service: USLegalProExistingCaseService = field(
         default_factory=USLegalProExistingCaseService
@@ -78,6 +92,8 @@ class FilingOrchestratorContext:
         bedrock: Optional[Bedrock] = None,
         court_rules_service: Optional[CourtRulesService] = None,
         codes_service: Optional[USLegalProCodesService] = None,
+        efile_service: Optional[USLegalProEFileService] = None,
+        submission_repo: Optional[FilingSubmissionRepository] = None,
         existing_case_service: Optional[USLegalProExistingCaseService] = None,
         user_repo: Optional[OperationalUserRepository] = None,
         s3_manager: Optional[S3Manager] = None,
@@ -85,6 +101,8 @@ class FilingOrchestratorContext:
         shared = bedrock or get_bedrock()
         filing_repo = filing_repo or LegalFilingRepository()
         conversation_repo = conversation_repo or ConversationRepository()
+        resolved_user_repo = user_repo or OperationalUserRepository(rds=filing_repo.rds)
+        resolved_codes_service = codes_service or USLegalProCodesService()
         s3 = s3_manager
         if s3 is None:
             try:
@@ -102,11 +120,17 @@ class FilingOrchestratorContext:
             bedrock=shared,
             court_rules_service=court_rules_service
             or CourtRulesService(embedder=shared, llm_client=shared),
-            codes_service=codes_service or USLegalProCodesService(),
+            codes_service=resolved_codes_service,
+            efile_service=efile_service
+            or USLegalProEFileService(
+                user_repo=resolved_user_repo,
+                codes_service=resolved_codes_service,
+                mapping_service=_efile_mapping_service(shared),
+            ),
+            submission_repo=submission_repo or FilingSubmissionRepository(rds=filing_repo.rds),
             existing_case_service=existing_case_service
             or USLegalProExistingCaseService(),
-            user_repo=user_repo
-            or OperationalUserRepository(rds=filing_repo.rds),
+            user_repo=resolved_user_repo,
             s3_manager=s3,
         )
 

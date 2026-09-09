@@ -132,7 +132,22 @@ class Settings(BaseSettings):
     )
     USLEGALPRO_CLIENT_TOKEN: Optional[str] = Field(default=None)
     USLEGALPRO_AUTH_TOKEN: Optional[str] = Field(default=None)
+    USLEGALPRO_USERNAME: Optional[str] = Field(default=None)
+    USLEGALPRO_PASSWORD: Optional[str] = Field(default=None)
+    USLEGALPRO_PAYMENT_API_BASE_URL: Optional[str] = Field(
+        default=None,
+        description=(
+            "Base URL of the Braintree payment API ({{domain}} in the REST collection). "
+            "This host is separate from USLEGALPRO_API_BASE_URL, which only serves /v2 court APIs."
+        ),
+    )
+    USLEGALPRO_FIND_CUSTOMER_PATH: str = Field(default="/payment/find_customer")
+    USLEGALPRO_CREDIT_CARDS_PATH: str = Field(default="/payment/credit_cards")
     USLEGALPRO_API_TIMEOUT_SECONDS: float = Field(default=30.0)
+    USLEGALPRO_DOC_GEN_TIMEOUT_SECONDS: float = Field(
+        default=180.0,
+        description="Timeout for POST /ai/{state}/generate_documents",
+    )
 
     # ============== IDP - LLM ==============
     LLM_PROVIDER: str = Field(default="bedrock")

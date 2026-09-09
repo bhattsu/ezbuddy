@@ -39,6 +39,7 @@ def build_filing_graph(ctx: FilingOrchestratorContext):
     graph.add_node("analyze_and_prefill", nodes["analyze_and_prefill"])
     graph.add_node("workflow", nodes["workflow"])
     graph.add_node("generate_documents", nodes["generate_documents"])
+    graph.add_node("verify_payment", nodes["verify_payment"])
     graph.add_node("persist", nodes["persist"])
 
     graph.set_conditional_entry_point(
@@ -65,6 +66,7 @@ def build_filing_graph(ctx: FilingOrchestratorContext):
         {
             "offer_documents": "offer_documents",
             "workflow": "workflow",
+            "verify_payment": "verify_payment",
             "navigation": "navigation",
         },
     )
@@ -74,6 +76,7 @@ def build_filing_graph(ctx: FilingOrchestratorContext):
         route_after_navigation,
         {
             "init_workflow": "init_workflow",
+            "offer_documents": "offer_documents",
             "workflow": "workflow",
             "case_located": "persist",
             "persist": "persist",
@@ -127,6 +130,7 @@ def build_filing_graph(ctx: FilingOrchestratorContext):
     )
 
     graph.add_edge("generate_documents", "persist")
+    graph.add_edge("verify_payment", "persist")
     graph.add_edge("persist", END)
 
     return graph.compile()

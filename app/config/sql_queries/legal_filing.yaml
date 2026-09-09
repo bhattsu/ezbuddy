@@ -363,6 +363,28 @@ fetch_latest_template_version: |
   WHERE tv.template_id = $1::uuid
   ORDER BY tv.version DESC
   LIMIT 1
+fetch_document_template_by_id: |
+  SELECT
+      dt.id AS template_id,
+      dt.code AS template_code,
+      dt.name AS template_name,
+      dt.doc_type,
+      dt.field_mapping,
+      dt.sample_input,
+      tv.id AS template_version_id,
+      tv.version AS template_version,
+      tv.s3_bucket,
+      tv.s3_key
+  FROM configuration.document_templates dt
+  LEFT JOIN LATERAL (
+      SELECT tv2.*
+      FROM configuration.template_versions tv2
+      WHERE tv2.template_id = dt.id
+      ORDER BY tv2.version DESC
+      LIMIT 1
+  ) tv ON TRUE
+  WHERE dt.id = $1::uuid
+  LIMIT 1
 fetch_jurisdiction_api_data_by_state: |
   SELECT
       id,

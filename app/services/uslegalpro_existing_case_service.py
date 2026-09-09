@@ -58,21 +58,38 @@ class USLegalProExistingCaseService:
         state_code: str,
         case_tracking_id: str,
         auth_token: str,
+        case_detail_link: Dict[str, Any] | None = None,
         case_detail_url: str = "",
     ) -> Dict[str, Any]:
+        detail_link = dict(case_detail_link or {})
+        url = str(detail_link.get("link") or case_detail_url or "").strip()
+        link_auth = str((detail_link.get("header") or {}).get("authtoken") or "").strip()
+        if url:
+            token = link_auth or auth_token
+            client = self._client(token)
+            logger.info(
+                "Existing-case detail url=%s authtoken=%s clienttoken=%s",
+                url,
+                "from_search_link" if link_auth else "from_session",
+                client.client_token or "<missing>",
+            )
+            response = await client.get_json(url)
+            return dict(response) if isinstance(response, dict) else {}
+
         client = self._client(auth_token)
         state = state_code.strip().lower()
         tracking_id = quote(case_tracking_id.strip(), safe="~:-_")
-        try:
-            response = await client.get_json(f"/v2/{state}/case/{tracking_id}")
-        except Exception:
-            if not case_detail_url:
-                raise
-            logger.info(
-                "Case path lookup failed; following search response case_detail link"
-            )
-            response = await client.get_json(case_detail_url)
+        response = await client.get_json(f"/v2/{state}/case/{tracking_id}")
         return dict(response) if isinstance(response, dict) else {}
+
+    @staticmethod
+    def case_detail_link(search_item: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the case_detail link object from a search_case item."""
+        links = search_item.get("link")
+        if not isinstance(links, dict):
+            return {}
+        detail = links.get("case_detail")
+        return dict(detail) if isinstance(detail, dict) else {}
 
     @staticmethod
     def search_items(response: Dict[str, Any]) -> List[Dict[str, Any]]:

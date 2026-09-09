@@ -33,6 +33,13 @@ DOCUMENT_OFFER_WITH_REQUIRED = (
     "If not, we can continue with a few questions."
 )
 
+DOCUMENT_OFFER_AFTER_TEMPLATE = (
+    "I extracted the questions for {doc_name}. "
+    "If you have a filled PDF of this document, upload it now. "
+    "I will use only the values that are already filled in and skip those questions. "
+    "If you do not have a file, say no and we will continue with the remaining questions."
+)
+
 AWAITING_UPLOAD_MESSAGE = (
     "Please upload one or more PDF or Word files. You can send several at once or one at a time. "
     "When you are finished uploading, say that is all and we will continue with any remaining questions."

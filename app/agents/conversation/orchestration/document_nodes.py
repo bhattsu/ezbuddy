@@ -13,6 +13,7 @@ from app.agents.conversation.orchestration.helpers import (
     classify_document_offer_reply,
     format_required_document_list,
     merge_prefilled_answers,
+    next_pending_question,
     persist_system_state,
     required_templates,
     result_from_session,
@@ -28,6 +29,7 @@ from app.agents.conversation.orchestration.state import (
 from app.api.schemas.filing_events import FilingPhase
 from app.core.prompts.document_offer import (
     AWAITING_UPLOAD_MESSAGE,
+    DOCUMENT_OFFER_AFTER_TEMPLATE,
     DOCUMENT_OFFER_MESSAGE,
     DOCUMENT_OFFER_NO_TEMPLATES,
     DOCUMENT_OFFER_WITH_REQUIRED,
@@ -54,6 +56,39 @@ def _resolve_field_mapping(session: FilingSession) -> str:
     return ""
 
 
+async def _load_field_mapping_from_db(
+    ctx: FilingOrchestratorContext, session: FilingSession
+) -> str:
+    """Reload field_mapping from configuration.document_templates before generation."""
+    template_id = str(session.selections.get("template_id") or "").strip()
+    if not template_id:
+        return _resolve_field_mapping(session)
+
+    row = await ctx.filing_repo.get_document_template_by_id(template_id)
+    if not row:
+        return _resolve_field_mapping(session)
+
+    mapping = str(row.get("field_mapping") or "").strip()
+    if mapping:
+        session.selections["field_mapping"] = mapping
+    if row.get("template_code"):
+        session.selections["template_code"] = str(row["template_code"])
+    if row.get("doc_type"):
+        session.selections.setdefault("doc_type", str(row["doc_type"]))
+    if row.get("template_version") is not None:
+        session.selections["template_version"] = row["template_version"]
+    if row.get("template_version_id"):
+        session.selections["template_version_id"] = str(row["template_version_id"])
+    if row.get("s3_key"):
+        session.selections["s3_key"] = str(row["s3_key"])
+    if row.get("s3_bucket"):
+        session.selections["s3_bucket"] = str(row["s3_bucket"])
+    if row.get("sample_input"):
+        session.selections["sample_input"] = row["sample_input"]
+
+    return mapping or _resolve_field_mapping(session)
+
+
 def _required_doc_names(session: FilingSession) -> List[str]:
     names = []
     for doc in required_templates(session):
@@ -64,6 +99,14 @@ def _required_doc_names(session: FilingSession) -> List[str]:
 
 
 def _offer_message(session: FilingSession) -> str:
+    if session.selections.get("template_questions_ready"):
+        doc_name = str(
+            session.selections.get("document_type_name")
+            or session.selections.get("template_code")
+            or session.selections.get("doc_type")
+            or "this document"
+        ).strip()
+        return DOCUMENT_OFFER_AFTER_TEMPLATE.format(doc_name=doc_name)
     docs = required_templates(session)
     names = _required_doc_names(session)
     if names:
@@ -247,6 +290,52 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "next_node": "generate_documents",
             }
 
+        if session.selections.get("template_questions_ready"):
+            from app.agents.utils.workflow_batch import format_next_form_question_message
+
+            session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+            await ctx.notify("collecting_workflow_answers")
+            if newly:
+                intro = (
+                    f"I pre-filled {len(newly)} field(s) from your document "
+                    "and skipped those questions."
+                    + fail_note
+                )
+            elif successful:
+                intro = (
+                    "I reviewed the uploaded document but did not find additional "
+                    "filled values that match the remaining questions."
+                    + fail_note
+                )
+            else:
+                intro = (
+                    "I could not analyze the uploaded file(s)."
+                    + fail_note
+                )
+            message = format_next_form_question_message(
+                intro,
+                next_pending_question(session),
+            )
+            combined = successful[0]["analysis"] if successful else {}
+            result = result_from_session(
+                session,
+                message,
+                event_kind="analysis.complete",
+                metadata={
+                    "prefilled_fields": newly,
+                    "files": results,
+                    "required_documents": required_templates(session),
+                },
+                analysis=combined,
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
+
         session.phase = FilingPhase.AWAITING_DOCUMENT_UPLOAD
         if newly:
             message = MORE_UPLOADS_MESSAGE.format(count=len(newly)) + fail_note
@@ -297,32 +386,30 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             DocumentGenerationV2Service,
         )
 
-        extracted_fields = session.selections.get("extracted_form_questions") or [
-            {
-                "field": q.get("pdf_field") or q.get("field") or q.get("field_label"),
-                "question": q.get("field_label") or q.get("question"),
-                "page": q.get("page"),
-                "answer": session.collected_answers.get(q.get("field_name"), ""),
-            }
-            for q in (
-                session.metadata.get("workflow_questions_full")
-                or session.workflow_questions
-            )
-        ]
-        answers = dict(session.collected_answers)
-        for question in (
+        workflow_questions = (
             session.metadata.get("workflow_questions_full")
             or session.workflow_questions
-        ):
+        )
+        extracted_fields = _extracted_fields_for_mapping(
+            session.selections.get("extracted_form_questions") or [],
+            workflow_questions,
+            session.collected_answers,
+            await _load_field_mapping_from_db(ctx, session),
+        )
+        answers = dict(session.collected_answers)
+        for question in workflow_questions:
             value = answers.get(question.get("field_name"))
             if value in (None, ""):
                 continue
-            pdf_field = question.get("pdf_field") or question.get("field")
-            if pdf_field:
-                answers.setdefault(str(pdf_field), value)
-            label = question.get("field_label") or question.get("question")
-            if label:
-                answers.setdefault(str(label), value)
+            for alias in (
+                question.get("mapping_source"),
+                question.get("pdf_field"),
+                question.get("field"),
+                question.get("field_label"),
+                question.get("question"),
+            ):
+                if alias:
+                    answers.setdefault(str(alias), value)
 
         file_name = str(
             session.selections.get("template_code")
@@ -337,29 +424,56 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 answers=answers,
                 file_name=file_name,
             )
-            field_mapping = _resolve_field_mapping(session)
+            field_mapping = await _load_field_mapping_from_db(ctx, session)
             if not field_mapping:
                 raise RuntimeError(
                     "The selected document template has no field_mapping, "
                     "so JSON cannot be generated."
                 )
-            from app.services.field_mapping_service import FieldMappingService
+            from app.services.field_mapping_service import (
+                FieldMappingService,
+                assert_valid_generate_documents_payload,
+                materialize_field_mapping,
+            )
 
             await ctx.notify("mapping_fields")
+            sample_input = session.selections.get("sample_input")
             mapping_result = await FieldMappingService(ctx.bedrock).map_fields(
                 field_mapping=field_mapping,
                 workflow_questions=session.workflow_questions,
-                collected_answers=session.collected_answers,
+                collected_answers=answers,
                 filled_fields=filled.fields,
+                selections=session.selections,
+                sample_input=sample_input,
             )
             mapped_fields = mapping_result.fields
-            output_fields = mapped_fields
+            request_payload = materialize_field_mapping(
+                field_mapping,
+                mapped_fields=mapped_fields,
+                selections=session.selections,
+                collected_answers=answers,
+                sample_input=sample_input,
+            )
+            payload_validation = assert_valid_generate_documents_payload(
+                field_mapping,
+                request_payload,
+                sample_input=sample_input,
+                selections=session.selections,
+            )
+            output_fields = (
+                request_payload.get("form_data")
+                if isinstance(request_payload.get("form_data"), dict)
+                else request_payload
+            )
             field_mapping_validation = {
                 "is_complete": mapping_result.is_complete,
                 "expected_targets": mapping_result.expected_targets,
                 "missing_from_llm": mapping_result.missing_from_llm,
                 "backfilled_targets": mapping_result.backfilled_targets,
                 "empty_targets": mapping_result.empty_targets,
+                "payload_valid": payload_validation.is_valid,
+                "expected_form_data_keys": payload_validation.expected_form_data_keys,
+                "semantic_errors": payload_validation.semantic_errors,
             }
             generated.append(
                 {
@@ -368,6 +482,7 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "file_name": file_name,
                     "document_id": filled.document_id,
                     "fields": output_fields,
+                    "request_payload": request_payload,
                     "pdf_fields": filled.fields,
                     "mapped_fields": mapped_fields or None,
                     "field_mapping_validation": field_mapping_validation,
@@ -375,11 +490,42 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "skipped_because_uploaded": False,
                 }
             )
-            message = (
-                "Filing answers are complete. Here is the filled form JSON.\n\n"
-                + json.dumps(output_fields, indent=2, ensure_ascii=False)
+            from app.services.uslegalpro_document_generation_service import (
+                GENERATED_PDF_NAME,
+                USLegalProDocumentGenerationService,
             )
+            from app.services.uslegalpro_payment_service import PAYMENT_ID_PROMPT
+
+            try:
+                await ctx.notify("generating_court_document")
+                rendered = await USLegalProDocumentGenerationService().generate(
+                    payload=request_payload,
+                )
+                generated[-1]["file_name"] = GENERATED_PDF_NAME
+                generated[-1]["download_url"] = rendered.download_url
+                generated[-1]["s3_url"] = rendered.download_url
+                generated[-1]["file_url"] = rendered.download_url
+                generated[-1]["file"] = rendered.download_url
+                generated[-1]["source"] = "uslegalpro_generate_documents"
+                session.selections["efile_file_url"] = rendered.download_url
+                session.selections["generated_pdf_name"] = GENERATED_PDF_NAME
+                message = (
+                    "Filing answers are complete. Your document is ready: "
+                    f"{GENERATED_PDF_NAME}\n{rendered.download_url}\n\n"
+                    + PAYMENT_ID_PROMPT
+                )
+            except Exception as api_exc:  # noqa: BLE001
+                logger.exception("US Legal Pro generate_documents failed")
+                generated[-1]["error"] = str(api_exc)
+                message = (
+                    "Filing answers are complete. Here is the filled form JSON.\n\n"
+                    + json.dumps(output_fields, indent=2, ensure_ascii=False)
+                    + f"\n\nI could not generate {GENERATED_PDF_NAME}. {api_exc}\n\n"
+                    + PAYMENT_ID_PROMPT
+                )
+            session.phase = FilingPhase.VERIFYING_PLATFORM_PAYMENT
             await ctx.notify("documents_ready")
+            await ctx.notify("verifying_platform_payment")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Document generation 2.0 failed in chat")
             generated.append(
@@ -396,11 +542,11 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "I collected your answers but could not build the form JSON. "
                 f"{exc}"
             )
+            session.phase = FilingPhase.COMPLETE
             await ctx.notify("error", message=message, level="error")
+            await ctx.conversation_repo.complete_conversation(session.conversation_id)
 
         session.generated_documents = generated
-        session.phase = FilingPhase.COMPLETE
-        await ctx.conversation_repo.complete_conversation(session.conversation_id)
         await persist_system_state(ctx.conversation_repo, session)
 
         result = OrchestratorResult(
@@ -429,6 +575,60 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         "analyze_and_prefill": analyze_and_prefill_node,
         "generate_documents": generate_documents_node,
     }
+
+
+def _extracted_fields_for_mapping(
+    extracted_fields: List[Dict[str, Any]],
+    workflow_questions: List[Dict[str, Any]],
+    collected_answers: Dict[str, Any],
+    field_mapping: str,
+) -> List[Dict[str, Any]]:
+    """Keep only extracted PDF fields that correspond to field_mapping sources."""
+    from app.services.document_template_match import normalize_token_text
+    from app.services.field_mapping_service import parse_field_mapping_sources
+
+    sources = parse_field_mapping_sources(field_mapping)
+    allowed = {normalize_token_text(source) for source in sources if source}
+    for question in workflow_questions or []:
+        for key in ("field_name", "mapping_source", "pdf_field", "field"):
+            token = normalize_token_text(question.get(key))
+            if token:
+                allowed.add(token)
+    rows: List[Dict[str, Any]] = []
+    for item in extracted_fields or []:
+        haystack = normalize_token_text(
+            " ".join(
+                str(item.get(key) or "")
+                for key in ("field", "question", "pdf_field", "field_name")
+            )
+        )
+        if allowed and haystack and not any(token in haystack or haystack in token for token in allowed):
+            continue
+        row = dict(item)
+        field = str(row.get("field") or row.get("pdf_field") or "")
+        if not row.get("answer"):
+            for question in workflow_questions or []:
+                aliases = {
+                    str(question.get(key) or "")
+                    for key in ("field_name", "mapping_source", "pdf_field", "field")
+                }
+                if field and field in aliases:
+                    value = collected_answers.get(question.get("field_name"))
+                    if value not in (None, ""):
+                        row["answer"] = value
+                        break
+        rows.append(row)
+    if rows:
+        return rows
+    return [
+        {
+            "field": q.get("pdf_field") or q.get("field") or q.get("field_name"),
+            "question": q.get("field_label") or q.get("question"),
+            "page": q.get("page"),
+            "answer": collected_answers.get(q.get("field_name"), ""),
+        }
+        for q in workflow_questions or []
+    ]
 
 
 async def _fill_template(

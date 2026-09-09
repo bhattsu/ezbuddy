@@ -10,15 +10,9 @@ ALL_PENDING_BATCH = 10_000
 
 
 def _question_visible(question: Dict[str, Any], answers: Dict[str, Any]) -> bool:
-    cond = question.get("visibility_condition")
-    if not cond:
-        return True
-    if isinstance(cond, dict):
-        for key, expected in cond.items():
-            if answers.get(key) != expected:
-                return False
-        return True
-    return True
+    from app.services.field_mapping_service import is_mapping_question_visible
+
+    return is_mapping_question_visible(question, answers)
 
 
 def batch_pending_questions(

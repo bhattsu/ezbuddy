@@ -9,7 +9,13 @@ from pydantic import BaseModel, Field
 
 NavigationIntent = Literal["generic_legal", "filing_new", "filing_existing", "continue"]
 
-LookupAction = Literal["party_search", "date_search", "case_number", "confirm_case"]
+LookupAction = Literal[
+    "party_search",
+    "date_search",
+    "case_number",
+    "confirm_case",
+    "check_status",
+]
 
 ChecklistStatus = Literal["pending", "answered", "skipped"]
 

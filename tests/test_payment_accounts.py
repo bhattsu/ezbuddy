@@ -11,20 +11,21 @@ from app.services.uslegalpro_payment_service import USLegalProPaymentService
 AUTH_TOKEN = "3f1b6c1e-6b4a-4f5e-9a2a-2f5c6a7b8c9d/GENS99/8a7b6c5d-4e3f-4a2b-9c8d-1e2f3a4b5c6d"
 
 
-def test_resolve_auth_token_prefers_stored_user_token(monkeypatch):
+def test_resolve_auth_token_prefers_stored_user_token():
+    token = resolve_auth_token({"auth_token": AUTH_TOKEN})
+    assert token == AUTH_TOKEN
+
+
+def test_resolve_auth_token_ignores_env_when_user_has_token(monkeypatch):
     monkeypatch.setattr(
-        "app.adapters.uslegalpro.tokens.settings.USLEGALPRO_AUTH_TOKEN",
-        "",
+        "app.config.settings.settings.USLEGALPRO_AUTH_TOKEN",
+        "env-user/GENS00/env-session",
     )
     token = resolve_auth_token({"auth_token": AUTH_TOKEN})
     assert token == AUTH_TOKEN
 
 
-def test_resolve_auth_token_missing_raises(monkeypatch):
-    monkeypatch.setattr(
-        "app.adapters.uslegalpro.tokens.settings.USLEGALPRO_AUTH_TOKEN",
-        "",
-    )
+def test_resolve_auth_token_missing_raises():
     with pytest.raises(ValueError, match="No US Legal Pro authentication token"):
         resolve_auth_token(None)
 
@@ -87,10 +88,6 @@ async def test_get_payment_accounts_for_user_reads_token_from_db(monkeypatch):
     monkeypatch.setattr(
         "app.services.uslegalpro_payment_service.USLegalProApiClient",
         _Client,
-    )
-    monkeypatch.setattr(
-        "app.adapters.uslegalpro.tokens.settings.USLEGALPRO_AUTH_TOKEN",
-        "",
     )
 
     service = USLegalProPaymentService(user_repo=_UserRepo())

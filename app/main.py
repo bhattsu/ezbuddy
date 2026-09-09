@@ -95,8 +95,8 @@ class DrainMiddleware:
 
 
 app = FastAPI(
-    title="US Legal Pro - Unified RAG + IDP API",
-    description="Knowledge Augmentation (RAG) and Intelligent Document Processing (IDP)",
+    title="US Legal Pro filing chat",
+    description="WebSocket filing assistant, document analysis, and court-form questions",
     version="1.0.0",
     lifespan=lifespan,
 )
