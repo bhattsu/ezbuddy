@@ -10,14 +10,21 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+import httpx
+
 from app.adapters.uslegalpro.tokens import (
     client_token_from_auth_token,
     resolve_auth_token,
 )
 from app.config.settings import settings
+from app.services.efile_validator import (
+    EFilePayloadValidationError,
+    validate_existing_case_payload,
+    validate_new_case_payload,
+)
 from app.services.operational_user_repository import OperationalUserRepository
 from app.services.uslegalpro_api_client import USLegalProApiClient
-from app.services.uslegalpro_codes_service import USLegalProCodesService
+from app.services.uslegalpro_codes_service import CodeBundle, USLegalProCodesService
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +81,69 @@ def unique_reference_id(prefix: str = "EFILE") -> str:
 def draft_reference_id(year: Optional[int] = None) -> str:
     current_year = year or datetime.now(timezone.utc).year
     return f"DRAFT-{current_year}-{random.randint(10000, 99999)}"
+
+
+async def _fetch_url_size(url: str, timeout: float = 15.0) -> Optional[int]:
+    """
+    Return the ``Content-Length`` of ``url`` in bytes, or ``None`` on failure.
+
+    Prefers a HEAD request (cheap, no body transfer). Falls back to a
+    streaming GET so it also works for S3 signed URLs that reject HEAD.
+    """
+    url_s = str(url or "").strip()
+    if not url_s or not (
+        url_s.startswith("http://") or url_s.startswith("https://")
+    ):
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            head_resp = await client.head(url_s)
+            content_length = head_resp.headers.get("content-length")
+            if content_length and content_length.isdigit():
+                size = int(content_length)
+                if size > 0:
+                    return size
+            # Fallback: streaming GET reads only headers by aborting the body.
+            async with client.stream("GET", url_s) as get_resp:
+                content_length = get_resp.headers.get("content-length")
+                if content_length and content_length.isdigit():
+                    size = int(content_length)
+                    if size > 0:
+                        return size
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not fetch Content-Length for %s: %s", url_s, exc)
+    return None
+
+
+async def resolve_filing_sizes(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Populate missing ``size`` on each filing by inspecting the file URL.
+
+    The validator requires a positive integer ``size`` per filing. When the
+    generator only returns a download URL we still need a real byte count
+    before submit, so this mutates ``filings[i].size`` in place when a value
+    can be inferred over HTTP.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return payload
+    filings = data.get("filings")
+    if not isinstance(filings, list):
+        return payload
+    for filing in filings:
+        if not isinstance(filing, dict):
+            continue
+        raw_size = filing.get("size")
+        if isinstance(raw_size, int) and raw_size > 0:
+            continue
+        if isinstance(raw_size, str) and raw_size.strip().isdigit():
+            filing["size"] = int(raw_size.strip())
+            if filing["size"] > 0:
+                continue
+        size = await _fetch_url_size(str(filing.get("file") or ""))
+        if size is not None:
+            filing["size"] = size
+    return payload
 
 
 def _items(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -314,6 +384,70 @@ class USLegalProEFileService:
             apply_known_efile_facts(mapped, known=known, filing=filing)
         )
 
+    # ------------------------------------------------------------------
+    # live-code helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_filing_codes(
+        selections: Dict[str, Any],
+        generated_documents: List[Dict[str, Any]],
+        override_data: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        """Gather every filing code the payload will attempt to submit."""
+        codes: List[str] = []
+
+        def _push(value: Any) -> None:
+            code = str(value or "").strip()
+            if code and code not in codes:
+                codes.append(code)
+
+        if isinstance(override_data, dict):
+            for row in override_data.get("filings") or []:
+                if isinstance(row, dict):
+                    _push(row.get("code"))
+        for row in selections.get("efile_filings") or []:
+            if isinstance(row, dict):
+                _push(row.get("code"))
+        for row in generated_documents or []:
+            if isinstance(row, dict):
+                _push(row.get("filing_code") or row.get("code"))
+        _push(selections.get("filing_code"))
+        return codes
+
+    async def _walk_bundle(
+        self,
+        selections: Dict[str, Any],
+        filing_codes: List[str],
+    ) -> CodeBundle:
+        state = str(selections.get("state_code") or "").strip().lower()
+        jurisdiction = str(selections.get("jurisdiction_code") or "").strip()
+        category = str(selections.get("case_category_code") or "").strip()
+        case_type = str(selections.get("case_type_code") or "").strip()
+        return await self.codes_service.walk_case_type_chain(
+            state,
+            jurisdiction,
+            category,
+            case_type,
+            filing_codes=filing_codes,
+        )
+
+    async def _bundle_from_selections(
+        self,
+        selections: Dict[str, Any],
+        generated_documents: List[Dict[str, Any]],
+        override_data: Optional[Dict[str, Any]] = None,
+    ) -> CodeBundle:
+        """Reuse cached bundle from the preview step when available."""
+        cached = selections.get("efile_code_bundle")
+        if isinstance(cached, dict) and cached.get("case_type"):
+            return CodeBundle.from_serializable(cached)
+        filing_codes = self._collect_filing_codes(
+            selections, generated_documents, override_data
+        )
+        bundle = await self._walk_bundle(selections, filing_codes)
+        return bundle
+
     async def build_submit_payload(
         self,
         *,
@@ -323,16 +457,17 @@ class USLegalProEFileService:
         generated_documents: List[Dict[str, Any]],
         workflow_questions: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
-        payload = dict(selections.get("efile_payload_override") or {})
-        if payload:
-            return payload
-
         from app.services.efile_mapping_service import (
             assemble_existing_case_efile_data,
-            assemble_new_case_efile_data,
+            assemble_new_case_efile_data_live,
         )
 
+        override = dict(selections.get("efile_payload_override") or {})
+
         if mode == "filing_existing":
+            if override:
+                validate_existing_case_payload(override, strict=True)
+                return override
             reference_id = str(
                 selections.get("reference_id") or unique_reference_id()
             ).strip()
@@ -341,17 +476,50 @@ class USLegalProEFileService:
                 generated_documents=generated_documents,
                 reference_id=reference_id,
             )
-        else:
-            reference_id = str(
-                selections.get("reference_id") or draft_reference_id()
-            ).strip()
-            data = assemble_new_case_efile_data(
-                selections=selections,
-                collected_answers=collected_answers,
-                generated_documents=generated_documents,
-                reference_id=reference_id,
+            payload = {"data": data}
+            validate_existing_case_payload(payload, strict=True)
+            return payload
+
+        # ---------- new-case path ----------
+        if override:
+            bundle = await self._bundle_from_selections(
+                selections, generated_documents, override_data=override.get("data")
             )
-        return {"data": data}
+            await resolve_filing_sizes(override)
+            route_state = str(selections.get("state_code") or "").strip().lower() or None
+            validate_new_case_payload(
+                override, bundle, strict=True, route_state=route_state
+            )
+            selections["efile_code_bundle"] = bundle.to_serializable()
+            return override
+
+        reference_id = str(
+            selections.get("reference_id") or draft_reference_id()
+        ).strip()
+        filing_codes = self._collect_filing_codes(
+            selections, generated_documents
+        )
+        bundle = await self._walk_bundle(selections, filing_codes)
+        data = assemble_new_case_efile_data_live(
+            selections=selections,
+            bundle=bundle,
+            collected_answers=collected_answers,
+            generated_documents=generated_documents,
+            reference_id=reference_id,
+        )
+        payload = {"data": data}
+        # Resolve missing filing sizes over HTTP before the validator asserts
+        # that ``filings[i].size`` is a positive integer. The document
+        # generation API only returns a download URL, so this is the earliest
+        # point where we can populate a real byte count for each file.
+        await resolve_filing_sizes(payload)
+        route_state = str(selections.get("state_code") or "").strip().lower() or None
+        validate_new_case_payload(
+            payload, bundle, strict=True, route_state=route_state
+        )
+        # Cache the bundle so the confirm step reuses it instead of re-walking.
+        selections["efile_code_bundle"] = bundle.to_serializable()
+        return payload
 
     async def submit(
         self,

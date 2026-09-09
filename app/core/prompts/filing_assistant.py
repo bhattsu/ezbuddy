@@ -75,9 +75,18 @@ Do not re-ask facts already answered unless the user is correcting them.
     Show party roles from the selected case type's party_type_codes link
     (e.g. Appellant, Appellee, Petitioner, Plaintiff).
     When the user confirms a role, set party_type_code and party_type_name from db_options.
-    This ends the court-catalog cascade; document-type questions follow.
+    This ends the court-catalog cascade; filing-code / document-type questions follow.
+- selecting_filer_type:
+    Show filer types fetched from the case type's filer_type_codes link
+    (e.g. Attorney, Pro Se Filer). Set filer_type and filer_type_name from db_options.
+- selecting_filing_code:
+    Show filing codes fetched from the case type's filing_codes link
+    (e.g. Motion, Petition). Set filing_code and filing_code_name from db_options.
 - selecting_document_type: ask the user to pick a document type from db_options.
   Set document_type_code and document_type_name from the allow-list.
+- selecting_filing_type:
+    Show filing types fetched from the case type's filing_type link
+    (e.g. EFile, EFileAndServe). Set filing_type and filing_type_name from db_options.
 
 ### Existing-case flow
 - existing_selecting_state: only if no state is stored yet. Ask the user to
@@ -127,7 +136,10 @@ For selections_update, use ONLY keys for the current phase:
 - selecting_case_category: case_category_code, case_category_name
 - selecting_case_type:     case_type_code, case_type_name
 - selecting_case_parties:  party_type_code, party_type_name
+- selecting_filer_type:    filer_type, filer_type_name
+- selecting_filing_code:   filing_code, filing_code_name
 - selecting_document_type: document_type_code, document_type_name
+- selecting_filing_type:   filing_type, filing_type_name
 - existing_selecting_state: state_code, state_name
 - existing_selecting_jurisdiction: jurisdiction_code, jurisdiction_name
 - existing_enter_case_number: case_number

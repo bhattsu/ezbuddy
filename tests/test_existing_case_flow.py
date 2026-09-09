@@ -68,6 +68,250 @@ def test_new_case_moves_through_filing_code_phase_when_available():
     assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
 
 
+def test_filing_code_selection_writes_bare_key_and_advances():
+    """Regression: local match on ``selecting_filing_code`` used to store only
+    ``filing_code_code``, so ``advance_phase_after_selections`` never saw a
+    truthy ``filing_code`` and the flow re-prompted the same dropdown forever.
+    The fix writes ``filing_code`` alongside ``filing_code_code`` and the
+    phase advances to ``SELECTING_DOCUMENT_TYPE``."""
+    from app.agents.utils.db_options_format import (
+        filter_selections_update,
+        selection_update_for_option,
+    )
+
+    options = [{"code": "136697", "name": "Petition"}]
+    update = selection_update_for_option("selecting_filing_code", options[0])
+    resolved = filter_selections_update(
+        "selecting_filing_code", update, options
+    )
+    assert resolved["filing_code"] == "136697"
+    assert resolved["filing_code_code"] == "136697"
+    assert resolved["filing_code_name"] == "Petition"
+
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_FILING_CODE,
+        selections={
+            "party_type_code": "53024",
+            "filing_codes_url": "https://example.com/filing_codes",
+            **resolved,
+        },
+    )
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
+    assert session.selections["filing_code"] == "136697"
+
+
+def test_filing_code_legacy_selection_still_advances():
+    """A session persisted from a previous release may only have
+    ``filing_code_code`` set. The flow must still advance and normalize the
+    scalar to the bare ``filing_code`` key the payload assembler reads."""
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_FILING_CODE,
+        selections={
+            "party_type_code": "53024",
+            "filing_codes_url": "https://example.com/filing_codes",
+            "filing_code_code": "136697",
+            "filing_code_name": "Petition",
+        },
+    )
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
+    assert session.selections["filing_code"] == "136697"
+
+
+def test_new_case_skips_filing_code_when_no_url_available():
+    """If a case type doesn't expose a filing_codes link, we fall back to
+    the document_type phase directly so the flow doesn't stall."""
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_CASE_PARTIES,
+        selections={
+            "party_type_code": "53024",
+            "case_type_name": "Divorce",
+        },
+    )
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
+
+
+def test_new_case_moves_through_filer_and_filing_type_phases_when_available():
+    """After document_type is ready, ask for filer_type then filing_type when
+    the case-type item exposed those API links."""
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_DOCUMENT_TYPE,
+        selections={
+            "template_questions_ready": True,
+            "filer_type_codes_url": "https://example.com/filer_type_codes",
+            "filing_type_url": "https://example.com/filing_type",
+        },
+    )
+
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_FILER_TYPE
+
+    session.selections["filer_type"] = "18569"
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_FILING_TYPE
+
+    session.selections["filing_type"] = "EFile"
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.OFFERING_DOCUMENTS
+
+
+def test_new_case_skips_filer_type_when_url_missing():
+    """No filer_type URL -> jump straight to filing_type when its URL is set."""
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_DOCUMENT_TYPE,
+        selections={
+            "template_questions_ready": True,
+            "filing_type_url": "https://example.com/filing_type",
+        },
+    )
+
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_FILING_TYPE
+
+
+def test_new_case_goes_straight_to_offering_when_neither_url_set():
+    """No filer_type/filing_type link -> proceed to OFFERING_DOCUMENTS as before."""
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_DOCUMENT_TYPE,
+        selections={"template_questions_ready": True},
+    )
+
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.OFFERING_DOCUMENTS
+
+
+def test_auto_pick_single_option_advances_filing_type():
+    """A one-option filing_type (e.g. just ``EFile``) is auto-picked and the
+    phase advances to OFFERING_DOCUMENTS without asking the user."""
+    from app.agents.conversation.orchestration.helpers import auto_pick_single_option
+
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_FILING_TYPE,
+        selections={
+            "template_questions_ready": True,
+            "filing_type_url": "https://example.com/filing_type",
+        },
+    )
+    advanced = auto_pick_single_option(
+        session,
+        FilingPhase.SELECTING_FILING_TYPE,
+        [{"code": "EFile", "name": "EFile"}],
+    )
+    assert advanced is True
+    assert session.selections["filing_type"] == "EFile"
+    assert session.phase == FilingPhase.OFFERING_DOCUMENTS
+
+
+def test_auto_pick_single_option_returns_false_for_multi_option():
+    """Multi-option list -> auto-pick is a no-op and the phase is unchanged."""
+    from app.agents.conversation.orchestration.helpers import auto_pick_single_option
+
+    session = FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_NEW,
+        phase=FilingPhase.SELECTING_FILER_TYPE,
+        selections={
+            "filer_type_codes_url": "https://example.com/filer_type_codes",
+        },
+    )
+    advanced = auto_pick_single_option(
+        session,
+        FilingPhase.SELECTING_FILER_TYPE,
+        [
+            {"code": "1", "name": "Attorney"},
+            {"code": "2", "name": "Pro Se Filer"},
+        ],
+    )
+    assert advanced is False
+    assert "filer_type" not in session.selections
+    assert session.phase == FilingPhase.SELECTING_FILER_TYPE
+
+
+def test_case_type_selection_propagates_filer_and_filing_type_urls():
+    """Selecting a case type should carry its filer_type_codes_url and
+    filing_type_url into ``selections`` so the new phases can call them."""
+    from app.agents.utils.db_options_format import (
+        filter_selections_update,
+        selection_update_for_option,
+    )
+
+    options = [
+        {
+            "code": "42311",
+            "name": "Divorce",
+            "party_type_codes_url": "https://example.com/party_type",
+            "filing_codes_url": "https://example.com/filing_codes",
+            "filer_type_codes_url": "https://example.com/filer_type_codes",
+            "filing_type_url": "https://example.com/filing_type",
+        }
+    ]
+
+    update = selection_update_for_option("selecting_case_type", options[0])
+    resolved = filter_selections_update("selecting_case_type", update, options)
+
+    assert resolved["case_type_code"] == "42311"
+    assert resolved["filing_codes_url"] == "https://example.com/filing_codes"
+    assert resolved["filer_type_codes_url"] == "https://example.com/filer_type_codes"
+    assert resolved["filing_type_url"] == "https://example.com/filing_type"
+
+
+def test_filer_and_filing_type_selection_updates_carry_selected_code():
+    """A dropdown pick on the new phases stores the raw scalar under the
+    same key the payload assembler expects (``filer_type`` / ``filing_type``)."""
+    from app.agents.utils.db_options_format import (
+        filter_selections_update,
+        selection_update_for_option,
+    )
+
+    filer_options = [
+        {"code": "18569", "name": "Attorney"},
+        {"code": "9835", "name": "Pro Se Filer"},
+    ]
+    update = selection_update_for_option("selecting_filer_type", filer_options[1])
+    resolved = filter_selections_update(
+        "selecting_filer_type", update, filer_options
+    )
+    assert resolved["filer_type"] == "9835"
+    assert resolved["filer_type_code"] == "9835"
+    assert resolved["filer_type_name"] == "Pro Se Filer"
+
+    ft_options = [
+        {"code": "EFile", "name": "EFile"},
+        {"code": "EFileAndServe", "name": "EFileAndServe"},
+    ]
+    update = selection_update_for_option("selecting_filing_type", ft_options[0])
+    resolved = filter_selections_update(
+        "selecting_filing_type", update, ft_options
+    )
+    assert resolved["filing_type"] == "EFile"
+    assert resolved["filing_type_code"] == "EFile"
+    assert resolved["filing_type_name"] == "EFile"
+
+
 AUTH_TOKEN = "3f1b6c1e-6b4a-4f5e-9a2a-2f5c6a7b8c9d/GENS99/8a7b6c5d-4e3f-4a2b-9c8d-1e2f3a4b5c6d"
 DETAIL_AUTH_TOKEN = (
     "8167276f-efab-410b-93f6-02ed1d4f0fb5/GENS77/a813ac2c-4347-40d8-a310-4e64c7dd8a1f"

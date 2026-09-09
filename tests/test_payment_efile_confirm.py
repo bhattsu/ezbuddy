@@ -7,9 +7,14 @@ import pytest
 from app.agents.conversation.orchestration.payment_nodes import (
     _handle_efile_confirm,
     _show_efile_preview,
+    _submit_efile_after_payment,
 )
 from app.agents.conversation.orchestration.state import FilingSession
 from app.api.schemas.filing_events import FilingMode, FilingPhase
+from app.services.efile_validator import (
+    EFilePayloadValidationError,
+    ValidationResult,
+)
 from app.services.uslegalpro_efile_service import EFileSubmitResult
 
 
@@ -104,3 +109,60 @@ async def test_no_cancels_without_submit():
     await _handle_efile_confirm(ctx, state, session, "no")
     assert ctx.efile_service.submit_calls == 0
     assert session.phase == FilingPhase.VERIFYING_COURT_PAYMENT
+
+
+class _ValidatorFailingEfileService(_EfileService):
+    """Simulate a service whose ``build_submit_payload`` fails validation."""
+
+    async def build_submit_payload(self, **kwargs):
+        raise EFilePayloadValidationError(
+            ValidationResult(
+                is_valid=False,
+                errors=[
+                    "data.filer_type '' is not one of the filer types for case type 209421 (allowed: 54325)",
+                    "data.filings[0].doc_type '99999' is not a valid document type for filing code '209523' (allowed: 53689)",
+                ],
+                warnings=[],
+            )
+        )
+
+
+class _SubmitFailingEfileService(_EfileService):
+    """Simulate a service that raises validation during ``submit``."""
+
+    async def submit(self, **kwargs):  # type: ignore[override]
+        raise EFilePayloadValidationError(
+            ValidationResult(
+                is_valid=False,
+                errors=["data.filing_party_id 'Party_missing' does not match any case_parties[].id (available: ['Party_1'])"],
+                warnings=[],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_preview_surfaces_validation_errors():
+    ctx = _Ctx()
+    ctx.efile_service = _ValidatorFailingEfileService()
+    session = _session()
+    state = {"conversation_id": "conv-1", "user_id": "user-1"}
+    result_state = await _show_efile_preview(ctx, state, session)
+    message = result_state["result"].assistant_message
+    assert "I cannot build a valid e-file request" in message
+    assert "filer_type" in message
+    assert "doc_type" in message
+    # Session did not advance past VERIFYING_COURT_PAYMENT.
+    assert session.phase == FilingPhase.VERIFYING_COURT_PAYMENT
+
+
+@pytest.mark.asyncio
+async def test_submit_surfaces_validation_errors_via_selections():
+    ctx = _Ctx()
+    ctx.efile_service = _SubmitFailingEfileService()
+    session = _session()
+    submit_result = await _submit_efile_after_payment(ctx, session)
+    assert submit_result is None
+    error_message = session.selections.get("efile_submit_error") or ""
+    assert "filing_party_id" in error_message
+    assert "I cannot build a valid e-file request" in error_message
+    assert isinstance(session.selections.get("efile_validation_errors"), list)

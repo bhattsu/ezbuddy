@@ -215,7 +215,20 @@ async def _handle_court_payment(ctx, service, state, session, user_message):
     return await _show_efile_preview(ctx, state, session)
 
 
+def _format_validation_error(exc) -> str:
+    errors = getattr(exc, "errors", None)
+    if not errors:
+        return str(exc)
+    bullet = "\n  - ".join(errors)
+    return (
+        "I cannot build a valid e-file request for this case. "
+        "Please fix these before continuing:\n  - "
+        + bullet
+    )
+
+
 async def _show_efile_preview(ctx, state, session):
+    from app.services.efile_validator import EFilePayloadValidationError
     from app.services.uslegalpro_efile_service import format_efile_preview_message
 
     await ctx.notify("confirming_efile")
@@ -227,6 +240,21 @@ async def _show_efile_preview(ctx, state, session):
             generated_documents=session.generated_documents,
             workflow_questions=session.workflow_questions,
         )
+    except EFilePayloadValidationError as exc:
+        logger.warning("E-file payload validation failed: %s", exc.errors)
+        result = result_from_session(
+            session,
+            _format_validation_error(exc),
+            event_kind="payment.court",
+            metadata={"efile_validation_errors": exc.errors},
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
     except Exception as exc:  # noqa: BLE001
         logger.exception("E-file preview mapping failed")
         result = result_from_session(
@@ -371,6 +399,8 @@ async def _handle_efile_confirm(ctx, state, session, user_message):
 
 
 async def _submit_efile_after_payment(ctx, session) -> Optional[Any]:
+    from app.services.efile_validator import EFilePayloadValidationError
+
     try:
         submitted = await ctx.efile_service.submit(
             user_id=session.user_id,
@@ -380,6 +410,11 @@ async def _submit_efile_after_payment(ctx, session) -> Optional[Any]:
             generated_documents=session.generated_documents,
             workflow_questions=session.workflow_questions,
         )
+    except EFilePayloadValidationError as exc:
+        logger.warning("E-file payload validation failed at submit: %s", exc.errors)
+        session.selections["efile_submit_error"] = _format_validation_error(exc)
+        session.selections["efile_validation_errors"] = exc.errors
+        return None
     except Exception as exc:  # noqa: BLE001
         logger.exception("E-file submission failed")
         session.selections["efile_submit_error"] = str(exc)

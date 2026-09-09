@@ -370,6 +370,12 @@ async def apply_catalog_shortcuts(
                 ]
             if chosen.get("filing_codes_url"):
                 session.selections["filing_codes_url"] = chosen["filing_codes_url"]
+            if chosen.get("filer_type_codes_url"):
+                session.selections["filer_type_codes_url"] = chosen[
+                    "filer_type_codes_url"
+                ]
+            if chosen.get("filing_type_url"):
+                session.selections["filing_type_url"] = chosen["filing_type_url"]
             advance_phase_after_selections(session)
             continue
         return
@@ -454,6 +460,11 @@ async def load_db_options(
                 selections.get("case_type_code"),
             )
         return []
+    if phase == FilingPhase.SELECTING_FILER_TYPE:
+        url = selections.get("filer_type_codes_url")
+        if codes_service and url:
+            return await codes_service.fetch_by_url(str(url))
+        return []
     if phase == FilingPhase.SELECTING_FILING_CODE:
         url = selections.get("filing_codes_url")
         if codes_service and url:
@@ -462,6 +473,13 @@ async def load_db_options(
     if phase == FilingPhase.SELECTING_DOCUMENT_TYPE:
         templates = await filing_repo.list_active_document_templates()
         return match_document_templates(templates, selections)
+    if phase == FilingPhase.SELECTING_FILING_TYPE:
+        url = selections.get("filing_type_url")
+        if codes_service and url:
+            # filing_type endpoint returns ``{"item": {"EFile": "EFile"}}``,
+            # which the standard normalize path cannot read.
+            return await codes_service.fetch_filing_type_by_url(str(url))
+        return []
     if phase == FilingPhase.EXISTING_CASE_CONFIRM:
         case = selections.get("case_metadata")
         return [case] if case else []
@@ -480,8 +498,10 @@ _PHASE_CACHE_KEYS = {
     FilingPhase.SELECTING_CASE_CATEGORY: "cached_case_categories",
     FilingPhase.SELECTING_CASE_TYPE: "cached_case_types",
     FilingPhase.SELECTING_CASE_PARTIES: "cached_party_types",
+    FilingPhase.SELECTING_FILER_TYPE: "cached_filer_types",
     FilingPhase.SELECTING_FILING_CODE: "cached_filing_codes",
     FilingPhase.SELECTING_DOCUMENT_TYPE: "cached_document_types",
+    FilingPhase.SELECTING_FILING_TYPE: "cached_filing_types",
 }
 
 
@@ -506,6 +526,12 @@ def compact_cached_options(options: List[Dict[str, Any]]) -> List[Dict[str, Any]
             item["document_type_codes_url"] = str(
                 row.get("document_type_codes_url")
             ).strip()
+        if row.get("filer_type_codes_url"):
+            item["filer_type_codes_url"] = str(
+                row.get("filer_type_codes_url")
+            ).strip()
+        if row.get("filing_type_url"):
+            item["filing_type_url"] = str(row.get("filing_type_url")).strip()
         if code or name:
             rows.append(item)
     return rows
@@ -554,14 +580,26 @@ async def options_for_response(
 ) -> List[Dict[str, Any]]:
     if override is not None:
         return override
-    return await load_db_options(
-        filing_repo,
-        session.phase,
-        session.selections,
-        codes_service=codes_service,
-        mode=session.mode,
-        bedrock=bedrock,
-    )
+    # Auto-skip 1-option phases (filer_type, filing_type). Loop a few times
+    # in case a chain of single-option phases collapses (e.g. filer_type has
+    # a single Attorney entry AND filing_type is just EFile).
+    for _ in range(4):
+        phase = session.phase
+        options = await load_db_options(
+            filing_repo,
+            phase,
+            session.selections,
+            codes_service=codes_service,
+            mode=session.mode,
+            bedrock=bedrock,
+        )
+        if phase in (
+            FilingPhase.SELECTING_FILER_TYPE,
+            FilingPhase.SELECTING_FILING_TYPE,
+        ) and auto_pick_single_option(session, phase, options):
+            continue
+        return options
+    return []
 
 
 def merge_selections(session: FilingSession, update: Dict[str, Any]) -> None:
@@ -623,6 +661,23 @@ def advance_mode_from_intent(session: FilingSession, intent: str) -> None:
             session.phase = FilingPhase.EXISTING_SELECTING_STATE
 
 
+def _phase_after_document_type_ready(sel: Dict[str, Any]) -> "FilingPhase":
+    """After document_type is ready, ask for filer_type / filing_type if the
+    case-type item exposed those API links. If neither URL is present (or the
+    selection was already made) proceed to OFFERING_DOCUMENTS."""
+    if sel.get("filer_type_codes_url") and not sel.get("filer_type"):
+        return FilingPhase.SELECTING_FILER_TYPE
+    if sel.get("filing_type_url") and not sel.get("filing_type"):
+        return FilingPhase.SELECTING_FILING_TYPE
+    return FilingPhase.OFFERING_DOCUMENTS
+
+
+def _phase_after_filer_type(sel: Dict[str, Any]) -> "FilingPhase":
+    if sel.get("filing_type_url") and not sel.get("filing_type"):
+        return FilingPhase.SELECTING_FILING_TYPE
+    return FilingPhase.OFFERING_DOCUMENTS
+
+
 def advance_phase_after_selections(session: FilingSession) -> None:
     sel = session.selections
     if session.phase == FilingPhase.SELECTING_STATE and sel.get("state_code"):
@@ -646,11 +701,32 @@ def advance_phase_after_selections(session: FilingSession) -> None:
         ):
             sel["case_type"] = sel.get("case_type_name") or sel.get("case_type_code") or ""
             sel.setdefault("sub_case_type", "")
-            session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
-        elif session.phase == FilingPhase.SELECTING_FILING_CODE:
+            # Enter SELECTING_FILING_CODE when the case type exposed a
+            # filing_codes link (the normal Tyler flow). Fall back to the
+            # document-type phase when no live filing-code list is available.
+            if sel.get("filing_codes_url"):
+                session.phase = FilingPhase.SELECTING_FILING_CODE
+            else:
+                session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        elif session.phase == FilingPhase.SELECTING_FILING_CODE and (
+            sel.get("filing_code") or sel.get("filing_code_code")
+        ):
+            # Normalize to the bare ``filing_code`` scalar the payload
+            # assembler expects. ``filter_selections_update`` now writes
+            # both keys, but older sessions may only carry ``filing_code_code``.
+            if not sel.get("filing_code") and sel.get("filing_code_code"):
+                sel["filing_code"] = sel["filing_code_code"]
             session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
+        ):
+            session.phase = _phase_after_document_type_ready(sel)
+        elif session.phase == FilingPhase.SELECTING_FILER_TYPE and sel.get(
+            "filer_type"
+        ):
+            session.phase = _phase_after_filer_type(sel)
+        elif session.phase == FilingPhase.SELECTING_FILING_TYPE and sel.get(
+            "filing_type"
         ):
             session.phase = FilingPhase.OFFERING_DOCUMENTS
         elif session.phase == FilingPhase.SELECTING_COUNTY and sel.get("county_name"):
@@ -670,6 +746,36 @@ def advance_phase_after_selections(session: FilingSession) -> None:
             "template_questions_ready"
         ):
             session.phase = FilingPhase.OFFERING_DOCUMENTS
+
+
+def auto_pick_single_option(
+    session: FilingSession, phase: FilingPhase, options: List[Dict[str, Any]]
+) -> bool:
+    """
+    Auto-select and advance when a code lookup returned exactly one option.
+
+    Returns ``True`` if the phase was auto-advanced. This is called from the
+    node that just loaded ``options`` so the user is never asked to pick from
+    a one-item dropdown (e.g. ``filing_type`` usually returns just ``EFile``).
+    """
+    if session.phase != phase or not isinstance(options, list) or len(options) != 1:
+        return False
+    row = options[0] if isinstance(options[0], dict) else {}
+    code = str(row.get("code") or "").strip()
+    if not code:
+        return False
+
+    if phase == FilingPhase.SELECTING_FILER_TYPE:
+        session.selections["filer_type"] = code
+        session.selections["filer_type_name"] = str(row.get("name") or code)
+        advance_phase_after_selections(session)
+        return True
+    if phase == FilingPhase.SELECTING_FILING_TYPE:
+        session.selections["filing_type"] = code
+        session.selections["filing_type_name"] = str(row.get("name") or code)
+        advance_phase_after_selections(session)
+        return True
+    return False
 
 
 def question_visible(question: Dict[str, Any], answers: Dict[str, Any]) -> bool:
