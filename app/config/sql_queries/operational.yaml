@@ -10,6 +10,19 @@ fetch_user_by_email: |
   FROM operational.users u
   WHERE LOWER(u.email) = LOWER($1)
   LIMIT 1
+
+# $1 email, $2 session_id (external platform session)
+fetch_user_by_email_and_session: |
+  SELECT
+      u.id AS user_id,
+      u.email,
+      u.session_id,
+      u.created_at,
+      u.updated_at
+  FROM operational.users u
+  WHERE LOWER(u.email) = LOWER($1)
+    AND u.session_id = $2
+  LIMIT 1
 fetch_user_with_profile: |
   SELECT
       u.id AS user_id,

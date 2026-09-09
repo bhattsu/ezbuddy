@@ -11,6 +11,7 @@ from app.utils.sql_queries import get_sql
 logger = logging.getLogger(__name__)
 
 SQL_FETCH_USER_BY_EMAIL = get_sql("operational.fetch_user_by_email")
+SQL_FETCH_USER_BY_EMAIL_AND_SESSION = get_sql("operational.fetch_user_by_email_and_session")
 SQL_UPSERT_USER_ON_LOGIN = get_sql("operational.upsert_user_on_login")
 SQL_FETCH_USER_BY_AUTH_TOKEN = get_sql("operational.fetch_user_by_auth_token")
 SQL_FETCH_USER_BY_ID = get_sql("operational.fetch_user_by_id")
@@ -30,6 +31,20 @@ class OperationalUserRepository:
             return rows[0] if rows else None
         except RDSQueryError as exc:
             logger.warning("User fetch by email failed: %s", exc)
+            return None
+
+    async def get_by_email_and_session(
+        self, email: str, session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if self.rds is None:
+            return None
+        try:
+            rows = await self.rds.fetch(
+                SQL_FETCH_USER_BY_EMAIL_AND_SESSION, email, session_id
+            )
+            return rows[0] if rows else None
+        except RDSQueryError as exc:
+            logger.warning("User fetch by email and session failed: %s", exc)
             return None
 
     async def get_by_auth_token(self, auth_token: str) -> Optional[Dict[str, Any]]:
