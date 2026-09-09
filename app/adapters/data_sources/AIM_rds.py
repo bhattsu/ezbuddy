@@ -129,7 +129,11 @@ class RDSRepository:
             logger.info("RDSRepository connection pool created (min=%s max=%s)", self.pool_min_size, self.pool_max_size)
             return self._pool
         except Exception as exc:  # noqa: BLE001
-            raise RDSConnectionError(f"Failed to create asyncpg pool: {exc}") from exc
+            # asyncpg raises bare ConnectionRefusedError / TimeoutError with no message,
+            # so include the type to keep the log diagnosable.
+            raise RDSConnectionError(
+                f"Failed to create asyncpg pool: {type(exc).__name__}: {exc}"
+            ) from exc
 
     def _is_retryable(self, exc: Exception) -> bool:
         if isinstance(exc, asyncpg.PostgresConnectionError):

@@ -60,13 +60,6 @@ async def startup_rds(app: FastAPI) -> None:
 
 async def shutdown_rds(app: FastAPI) -> None:
     """Close the shared RDS pool on application shutdown."""
-    from app.services.court_catalog import get_court_catalog
-
-    try:
-        await get_court_catalog().cancel_inflight_loads()
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to cancel in-flight court catalog loads")
-
     repo: Optional[RDSRepository] = getattr(app.state, "rds_repo", None)
     if repo is not None:
         await repo.close()
