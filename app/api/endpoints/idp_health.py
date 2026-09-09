@@ -14,8 +14,8 @@ async def health_check():
     """Check if the service is running (liveness). Prefer /health/live and /health/ready for orchestration."""
     return {
         "status": "healthy",
-        "service": "document-extraction-api",
-        "version": "2.0.0"
+        "service": "us-legal-pro-filing-chat",
+        "version": "1.0.0"
     }
 
 @router.get(
