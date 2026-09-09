@@ -1,31 +1,15 @@
-"""
-Unified Chatbot Endpoint
-
-- Legal filing assistant (WebSocket /ws only)
-- Legacy RAG chatbot session + chat (POST /rag/chat, /session, ...)
-"""
+"""Legal filing assistant WebSocket (/chatbot/ws)."""
 
 import base64
 import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.api.dependencies import get_rag_components
-from app.api.schemas.chatbot import (
-    ChatRequest,
-    ChatResponse,
-    CreateSessionRequest,
-    ErrorResponse,
-    SessionListResponse,
-    SessionResponse,
-    UpdateSessionRequest,
-)
 from app.api.schemas.document import FileType
 from app.api.schemas.filing_events import parse_client_event
 from app.adapters.data_sources.AIM_rds import RDSRepository
-from app.services.chatbot_service import ChatbotService
 from app.services.conversation_repository import ConversationRepository
 from app.services.filing_assistant_service import FilingAssistantService
 from app.services.legal_filing_repository import LegalFilingRepository
@@ -67,14 +51,6 @@ async def _send_ws_events(websocket: WebSocket, events: list, emitted: Optional[
                 seen.add(process)
         await websocket.send_json(event)
     return seen
-
-
-def _get_chatbot_service(components: dict = Depends(get_rag_components)) -> ChatbotService:
-    logger.debug("Initializing ChatbotService with components")
-    return ChatbotService(
-        llm_client=components["llm"],
-        embedder=components["embedder"],
-    )
 
 
 def _build_filing_service(rds: Optional[RDSRepository]) -> FilingAssistantService:
@@ -288,91 +264,3 @@ async def filing_chat_ws(websocket: WebSocket):
         except Exception:  # noqa: BLE001
             pass
 
-
-# ============== RAG Session Management Endpoints ==============
-
-
-@router.post(
-    "/session",
-    response_model=SessionResponse,
-    responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
-    summary="Create RAG Chat Session",
-)
-async def create_session(
-    request: CreateSessionRequest,
-    service: ChatbotService = Depends(_get_chatbot_service),
-):
-    try:
-        return service.create_session(request)
-    except Exception as e:
-        logger.error("Failed to create session: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.get("/session/{session_id}", response_model=SessionResponse, summary="Get RAG Session")
-async def get_session(
-    session_id: str,
-    service: ChatbotService = Depends(_get_chatbot_service),
-):
-    session = service.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-    return session
-
-
-@router.patch("/session/{session_id}", response_model=SessionResponse, summary="Update RAG Session")
-async def update_session(
-    session_id: str,
-    request: UpdateSessionRequest,
-    service: ChatbotService = Depends(_get_chatbot_service),
-):
-    try:
-        session = service.update_session(session_id, request)
-        if not session:
-            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-        return session
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to update session: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.delete("/session/{session_id}", summary="Delete RAG Session")
-async def delete_session(
-    session_id: str,
-    service: ChatbotService = Depends(_get_chatbot_service),
-):
-    deleted = service.delete_session(session_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-    return {"message": f"Session {session_id} deleted successfully"}
-
-
-@router.get("/sessions", response_model=SessionListResponse, summary="List RAG Sessions")
-async def list_sessions(service: ChatbotService = Depends(_get_chatbot_service)):
-    try:
-        sessions = service.list_sessions()
-        return SessionListResponse(sessions=sessions, total=len(sessions))
-    except Exception as e:
-        logger.error("Failed to list sessions: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/rag/chat", response_model=ChatResponse, summary="RAG Chat")
-async def rag_chat(
-    request: ChatRequest,
-    service: ChatbotService = Depends(_get_chatbot_service),
-):
-    if not request.message and not request.query_image_base64:
-        raise HTTPException(
-            status_code=400,
-            detail="Must provide either message or query_image_base64",
-        )
-    try:
-        return await service.chat(request)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except Exception as e:
-        logger.error("RAG chat failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e

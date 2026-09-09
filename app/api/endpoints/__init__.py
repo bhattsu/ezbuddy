@@ -1,29 +1,17 @@
-"""
-API Endpoints Module
-
-This module provides endpoint routers for Naive RAG and ingestion.
-"""
+"""API endpoint routers mounted by the application."""
 
 from app.api.endpoints import (
-    naive_rag,
-    ingestion,
+    auth,
     chatbot,
-    idp_extraction,
-    idp_health,
-    document_generation,
-    document_generation_v2,
-    document_analysis,
     court_form_questions,
+    court_rules,
+    document_analysis,
 )
 
 __all__ = [
-    "naive_rag",
-    "ingestion",
+    "auth",
     "chatbot",
-    "idp_extraction",
-    "idp_health",
-    "document_generation",
-    "document_generation_v2",
-    "document_analysis",
     "court_form_questions",
+    "court_rules",
+    "document_analysis",
 ]
