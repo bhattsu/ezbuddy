@@ -251,17 +251,76 @@ async def test_existing_case_payload_uses_session_cache_only():
         "payment_account_id",
         "filing_party_id",
         "filing_type",
+        "filer_type",
         "filings",
     }
     assert data["case_tracking_id"] == "existing-track-1"
     assert data["payment_account_id"] == "CC_01eb044f-9e41-4966-93e2-31a5f8d9c01b"
     assert data["filing_party_id"] == "Party_from_case"
     assert data["filing_type"] == "EFile"
+    assert data["filer_type"] == "54325"
     assert "case_parties" not in data
     assert data["filings"][0]["file"] == "https://generated.example/case_document.pdf"
     assert data["filings"][0]["file_name"] == "case_document.pdf"
     assert data["filings"][0]["code"] == "209523"
     assert data["filings"][0]["doc_type"] == "53689"
+
+
+@pytest.mark.asyncio
+async def test_existing_case_payload_uses_cached_case_detail_codes():
+    """The court's filing_codes / document_type_codes picks win over the
+    document-template ``doc_type``, and ``filing_party_id`` comes from a party
+    ``id`` cached off the case-detail response."""
+    service = USLegalProEFileService(codes_service=_StubCodesService(_sample_bundle()))
+    selections = _base_selections(
+        case_tracking_id="tyler_refugio:dc~b32ef6f1~CT",
+        filing_code="151320",
+        doc_type_code="197902",
+        filer_type="40467",
+        existing_case_parties=[
+            {"id": "2fa1ea9d-32ba-45d6-a284-091cb11017b3", "type": "44700"},
+        ],
+        # Stale value from an earlier phase; the cached party id wins.
+        filing_party_id="Party_1",
+    )
+    selections.pop("reference_id")
+    payload = await service.build_submit_payload(
+        mode="filing_existing",
+        selections=selections,
+        collected_answers={},
+        generated_documents=[
+            {
+                "file_name": "case_document.pdf",
+                "download_url": "https://generated.example/case_document.pdf",
+            }
+        ],
+    )
+    data = payload["data"]
+    assert data["reference_id"].startswith("DRAFT-")
+    assert data["case_tracking_id"] == "tyler_refugio:dc~b32ef6f1~CT"
+    assert data["filing_party_id"] == "2fa1ea9d-32ba-45d6-a284-091cb11017b3"
+    assert data["filer_type"] == "40467"
+    assert data["filings"][0]["code"] == "151320"
+    assert data["filings"][0]["doc_type"] == "197902"
+
+
+@pytest.mark.asyncio
+async def test_existing_case_payload_omits_filer_type_when_court_has_none():
+    service = USLegalProEFileService(codes_service=_StubCodesService(_sample_bundle()))
+    selections = _base_selections(case_tracking_id="existing-track-1")
+    selections.pop("filer_type")
+    payload = await service.build_submit_payload(
+        mode="filing_existing",
+        selections=selections,
+        collected_answers={},
+        generated_documents=[
+            {
+                "file_name": "case_document.pdf",
+                "download_url": "https://generated.example/case_document.pdf",
+            }
+        ],
+    )
+    assert "filer_type" not in payload["data"]
 
 
 @pytest.mark.asyncio

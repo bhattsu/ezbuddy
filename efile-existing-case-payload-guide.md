@@ -192,6 +192,27 @@ These values describe the existing case or help build code links. They are not f
 }
 ```
 
+## How the chat flow implements this
+
+The case API is called once. `cache_existing_case_details` stores the whole
+response in `session.selections`, so every later step follows a cached link
+instead of re-fetching the case.
+
+| Step | Phase | Cached input | Stored selection |
+| --- | --- | --- | --- |
+| Case found | `existing_case_confirm` | case-detail response | `case_tracking_id`, `existing_case_parties`, `filing_party_id`, `case_detail_links`, `<link>_url` for every returned link |
+| Pick the filing | `selecting_filing_code` | `filing_codes_url` | `filing_code` (+ `document_type_codes_url` from the chosen item) |
+| Pick the court document type | `selecting_doc_type_code` | `document_type_codes_url` | `doc_type_code` |
+| Pick the template and answer its questions | `selecting_document_type` | RDS templates | `template_id`, generated PDF |
+| Pick the filer type | `selecting_filer_type` | `filer_type_codes_url` | `filer_type` |
+| Pick the filing type | `selecting_filing_type` | `filing_type_url` | `filing_type` |
+| Pick the payment account | `verifying_court_payment` | payment-accounts response | `court_payment_account_id` |
+
+Each dropdown shows the API item's `name` and stores its `code`.
+`filing_party_id` is always resolved to an `id` from `existing_case_parties`.
+`filer_type` is sent only when the court returned filer types.
+`reference_id` is generated as `DRAFT-<year>-<seconds-of-day><random digit>`.
+
 ## Developer checks
 
 - Always copy `code`, never `name`, into a code-backed payload field.

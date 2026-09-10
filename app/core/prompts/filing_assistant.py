@@ -100,8 +100,14 @@ Do not re-ask facts already answered unless the user is correcting them.
 - existing_case_confirm: summarize only the supplied case details. If the user
   confirms, set lookup_action to "confirm_case". If they reject it, do not
   confirm the case.
-- selecting_document_type: after the case is confirmed, ask the user to pick a
-  document type from db_options. Set document_type_code from the allow-list.
+- selecting_filing_code: after the case is confirmed, show the filing names
+  fetched from the case's filing_codes link (e.g. Notice of Appeal). Set
+  filing_code and filing_code_name from db_options.
+- selecting_doc_type_code: show the court document type names fetched from the
+  selected filing code's document_type_codes link (e.g. Lead Document,
+  Attachment). Set doc_type_code and doc_type_name from db_options.
+- selecting_document_type: ask the user to pick a document type from
+  db_options. Set document_type_code from the allow-list.
 - existing_search_party / existing_search_date: use db_options results only.
 
 ### Filing status checks
@@ -138,6 +144,7 @@ For selections_update, use ONLY keys for the current phase:
 - selecting_case_parties:  party_type_code, party_type_name
 - selecting_filer_type:    filer_type, filer_type_name
 - selecting_filing_code:   filing_code, filing_code_name
+- selecting_doc_type_code: doc_type_code, doc_type_name
 - selecting_document_type: document_type_code, document_type_name
 - selecting_filing_type:   filing_type, filing_type_name
 - existing_selecting_state: state_code, state_name

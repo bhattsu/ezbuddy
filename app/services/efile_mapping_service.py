@@ -78,6 +78,7 @@ EXISTING_CASE_EFILE_SAMPLE = {
         "payment_account_id": "CC_example-payment-account",
         "filing_party_id": "Party_example",
         "filing_type": "EFile",
+        "filer_type": "40467",
         "filings": [
             {
                 "code": "29736",
@@ -96,8 +97,12 @@ EXISTING_CASE_EFILE_KEYS = (
     "payment_account_id",
     "filing_party_id",
     "filing_type",
+    "filer_type",
     "filings",
 )
+# Sent only when the court returned filer types for this case, so an empty
+# value is dropped instead of posting ``"filer_type": ""``.
+EXISTING_CASE_OPTIONAL_KEYS = ("filer_type",)
 NEW_CASE_EFILE_KEYS = (
     "filer_type",
     "reference_id",
@@ -295,7 +300,11 @@ def _existing_case_filing(
         "code": _selected_code(selections, "filing_code"),
         "file_name": generated["file_name"],
         "description": generated["description"],
-        "doc_type": _selected_code(selections, "doc_type", "document_type_code"),
+        # ``doc_type_code`` is the court's document_type_codes selection for
+        # the chosen filing code; the template keys are the older fallback.
+        "doc_type": _selected_code(
+            selections, "doc_type_code", "doc_type", "document_type_code"
+        ),
         "file": generated["file"],
     }
 
@@ -832,17 +841,57 @@ def assemble_existing_case_efile_data(
     generated_documents: Optional[List[Dict[str, Any]]] = None,
     reference_id: str = "",
 ) -> Dict[str, Any]:
-    """Fill the existing-case sample shape from session cache/answers only."""
-    return {
+    """Fill the existing-case shape from the cached case detail and selections.
+
+    Every value comes from what the flow already cached: the case-detail
+    response (``case_tracking_id``, party ids), the court code lookups the
+    user picked from (``filer_type``, ``filing_type``, filing code, doc type),
+    the selected payment account, and the generated document.
+    """
+    data = {
         "reference_id": _text(reference_id or selections.get("reference_id")),
         "case_tracking_id": _text(selections.get("case_tracking_id")),
         "payment_account_id": _selected_code(selections, "court_payment_account_id"),
-        "filing_party_id": _selected_code(
-            selections, "filing_party_id", "efile_filing_party_id"
-        ),
+        "filing_party_id": _existing_filing_party_id(selections),
         "filing_type": _text(selections.get("filing_type")),
+        "filer_type": _text(selections.get("filer_type")),
         "filings": [_existing_case_filing(selections, generated_documents)],
     }
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in EXISTING_CASE_OPTIONAL_KEYS or value not in (None, "")
+    }
+
+
+def _existing_case_party_ids(selections: Dict[str, Any]) -> List[str]:
+    ids: List[str] = []
+    for row in selections.get("existing_case_parties") or []:
+        if not isinstance(row, dict):
+            continue
+        pid = _text(row.get("id"))
+        if pid and pid not in ids:
+            ids.append(pid)
+    return ids
+
+
+def _existing_filing_party_id(selections: Dict[str, Any]) -> str:
+    """Resolve ``filing_party_id`` to one of the cached case parties' ids."""
+    selected = _selected_code(
+        selections, "filing_party_id", "efile_filing_party_id"
+    )
+    party_ids = _existing_case_party_ids(selections)
+    if selected and (not party_ids or selected in party_ids):
+        return selected
+    if party_ids:
+        if selected:
+            logger.warning(
+                "filing_party_id '%s' is not a party on this case; using '%s'",
+                selected,
+                party_ids[0],
+            )
+        return party_ids[0]
+    return selected
 
 
 class EfileMappingLLMOutput(BaseModel):
@@ -1056,7 +1105,12 @@ def apply_known_efile_facts(
 def slim_existing_case_data(data: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only the existing-case e-file keys from the sample body."""
     source = dict(data or {})
-    slim = {key: source.get(key, "") for key in EXISTING_CASE_EFILE_KEYS}
+    slim = {
+        key: source.get(key, "")
+        for key in EXISTING_CASE_EFILE_KEYS
+        if key not in EXISTING_CASE_OPTIONAL_KEYS
+        or source.get(key) not in (None, "")
+    }
     filings = slim.get("filings")
     if not isinstance(filings, list):
         slim["filings"] = []

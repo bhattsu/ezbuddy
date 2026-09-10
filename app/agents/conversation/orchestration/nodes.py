@@ -21,6 +21,7 @@ from app.agents.conversation.orchestration.helpers import (
     apply_existing_search_attrs,
     attach_selection_options_to_result,
     build_checklist_from_questions,
+    cache_existing_case_details,
     cache_phase_options,
     capture_new_case_topic,
     get_session,
@@ -100,6 +101,7 @@ SELECTION_PHASES = (
     FilingPhase.SELECTING_CASE_PARTIES,
     FilingPhase.SELECTING_FILER_TYPE,
     FilingPhase.SELECTING_FILING_CODE,
+    FilingPhase.SELECTING_DOC_TYPE_CODE,
     FilingPhase.SELECTING_DOCUMENT_TYPE,
     FilingPhase.SELECTING_FILING_TYPE,
     FilingPhase.EXISTING_SELECTING_STATE,
@@ -912,6 +914,10 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                             "filing_party_id": filing_party_id,
                         }
                     )
+                    # Cache the whole detail response (codes, parties, links)
+                    # so the filing-code and document-type steps can follow
+                    # its links without calling the case API again.
+                    cache_existing_case_details(session, case_detail)
                     apply_existing_search_attrs(session, search_item, case_detail)
                     session.phase = FilingPhase.EXISTING_CASE_CONFIRM
                     await ctx.notify("existing_case_confirm")
@@ -967,7 +973,10 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         elif lookup_action == "case_number":
             await ctx.notify("searching_existing_case")
         elif lookup_action == "confirm_case":
-            await ctx.notify("loading_document_types")
+            if session.selections.get("filing_codes_url"):
+                await ctx.notify("loading_filing_codes")
+            else:
+                await ctx.notify("loading_document_types")
         await handle_lookup(
             ctx.filing_repo,
             session,

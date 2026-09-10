@@ -79,8 +79,15 @@ def unique_reference_id(prefix: str = "EFILE") -> str:
 
 
 def draft_reference_id(year: Optional[int] = None) -> str:
-    current_year = year or datetime.now(timezone.utc).year
-    return f"DRAFT-{current_year}-{random.randint(10000, 99999)}"
+    """``DRAFT-<year>-<seconds-of-day><random digit>``, e.g. ``DRAFT-2026-104984``.
+
+    The time component makes the value change every second and the trailing
+    random digit keeps two filings submitted in the same second apart.
+    """
+    now = datetime.now(timezone.utc)
+    current_year = year or now.year
+    seconds_of_day = now.hour * 3600 + now.minute * 60 + now.second
+    return f"DRAFT-{current_year}-{seconds_of_day:05d}{random.randint(0, 9)}"
 
 
 async def _fetch_url_size(url: str, timeout: float = 15.0) -> Optional[int]:
@@ -469,7 +476,7 @@ class USLegalProEFileService:
                 validate_existing_case_payload(override, strict=True)
                 return override
             reference_id = str(
-                selections.get("reference_id") or unique_reference_id()
+                selections.get("reference_id") or draft_reference_id()
             ).strip()
             data = assemble_existing_case_efile_data(
                 selections=selections,

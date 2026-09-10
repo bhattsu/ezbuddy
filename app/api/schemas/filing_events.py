@@ -28,6 +28,8 @@ class FilingPhase(str, Enum):
     SELECTING_CASE_PARTIES = "selecting_case_parties"
     SELECTING_FILER_TYPE = "selecting_filer_type"
     SELECTING_FILING_CODE = "selecting_filing_code"
+    # Tyler document_type_codes for the selected filing code (existing case).
+    SELECTING_DOC_TYPE_CODE = "selecting_doc_type_code"
     SELECTING_DOCUMENT_TYPE = "selecting_document_type"
     SELECTING_FILING_TYPE = "selecting_filing_type"
     OFFERING_DOCUMENTS = "offering_documents"

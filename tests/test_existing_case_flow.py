@@ -6,6 +6,8 @@ import pytest
 
 from app.agents.conversation.orchestration.helpers import (
     advance_phase_after_selections,
+    cache_existing_case_details,
+    handle_lookup,
 )
 from app.agents.conversation.orchestration.state import FilingSession
 from app.api.schemas.filing_events import FilingMode, FilingPhase
@@ -310,6 +312,179 @@ def test_filer_and_filing_type_selection_updates_carry_selected_code():
     assert resolved["filing_type"] == "EFile"
     assert resolved["filing_type_code"] == "EFile"
     assert resolved["filing_type_name"] == "EFile"
+
+
+CASE_TRACKING_ID = "tyler_refugio:dc~b32ef6f1-b09c-446f-a2f6-1985923d3513~CT"
+CASE_DETAIL = {
+    "case_tracking_id": CASE_TRACKING_ID,
+    "case_number": "20250622001",
+    "case_title": "Test Case",
+    "jurisdiction": "refugio:dc",
+    "case_category": "44675",
+    "case_type": "44680",
+    "case_parties": [
+        {
+            "id": "2fa1ea9d-32ba-45d6-a284-091cb11017b3",
+            "type": "44700",
+            "first_name": "JANE",
+            "last_name": "DOE",
+        },
+        {
+            "id": "8c0d2f61-1a4e-4d9c-9a11-6b0f8de3aa22",
+            "type": "44701",
+            "first_name": "JOHN",
+            "last_name": "DOE",
+        },
+    ],
+    "link": {
+        "filing_codes": {"link": "https://example.com/filing_codes?request_id=1"},
+        "filer_type_codes": {"link": "https://example.com/filer_type_codes"},
+        "filing_type": {"link": "https://example.com/filing_type"},
+        "party_type_codes": {"link": "https://example.com/party_type_codes"},
+    },
+}
+
+
+def _existing_session(phase: FilingPhase, **selections) -> FilingSession:
+    return FilingSession(
+        conversation_id="c1",
+        user_id="u1",
+        mode=FilingMode.FILING_EXISTING,
+        phase=phase,
+        selections=dict(selections),
+    )
+
+
+def test_case_detail_response_is_cached_into_selections():
+    """Everything the e-file payload needs is cached from the case API call."""
+    session = _existing_session(FilingPhase.EXISTING_CASE_CONFIRM)
+    cache_existing_case_details(session, CASE_DETAIL)
+    sel = session.selections
+
+    assert sel["case_tracking_id"] == CASE_TRACKING_ID
+    assert sel["jurisdiction_code"] == "refugio:dc"
+    assert sel["case_category_code"] == "44675"
+    assert sel["case_type_code"] == "44680"
+    # filing_party_id must be a party id from the response, not a party type.
+    assert sel["filing_party_id"] == "2fa1ea9d-32ba-45d6-a284-091cb11017b3"
+    assert len(sel["existing_case_parties"]) == 2
+    assert sel["filing_codes_url"] == "https://example.com/filing_codes?request_id=1"
+    assert sel["filer_type_codes_url"] == "https://example.com/filer_type_codes"
+    assert sel["filing_type_url"] == "https://example.com/filing_type"
+    assert set(sel["case_detail_links"]) == {
+        "filing_codes",
+        "filer_type_codes",
+        "filing_type",
+        "party_type_codes",
+    }
+
+
+def test_cached_parties_replace_a_filing_party_id_that_is_not_a_party():
+    session = _existing_session(
+        FilingPhase.EXISTING_CASE_CONFIRM, filing_party_id="44700"
+    )
+    cache_existing_case_details(session, CASE_DETAIL)
+    assert (
+        session.selections["filing_party_id"]
+        == "2fa1ea9d-32ba-45d6-a284-091cb11017b3"
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirmed_case_asks_for_filing_code_then_court_document_type():
+    """Confirm -> filing_codes -> that filing's document_type_codes -> template."""
+    session = _existing_session(FilingPhase.EXISTING_CASE_CONFIRM)
+    cache_existing_case_details(session, CASE_DETAIL)
+
+    await handle_lookup(None, session, "confirm_case", {})
+    assert session.phase == FilingPhase.SELECTING_FILING_CODE
+
+    session.selections["filing_code"] = "151320"
+    session.selections["document_type_codes_url"] = (
+        "https://example.com/document_type_codes"
+    )
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_DOC_TYPE_CODE
+
+    session.selections["doc_type_code"] = "197902"
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
+
+
+@pytest.mark.asyncio
+async def test_confirmed_case_falls_back_to_template_when_no_filing_codes_link():
+    session = _existing_session(FilingPhase.EXISTING_CASE_CONFIRM)
+    await handle_lookup(None, session, "confirm_case", {})
+    assert session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE
+
+
+def test_existing_case_asks_for_filer_type_after_template_questions():
+    """The case-detail filer_type/filing_type links drive the same phases the
+    new-case flow uses, so ``filer_type`` reaches the payload."""
+    session = _existing_session(
+        FilingPhase.SELECTING_DOCUMENT_TYPE,
+        template_questions_ready=True,
+        filer_type_codes_url="https://example.com/filer_type_codes",
+        filing_type_url="https://example.com/filing_type",
+    )
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_FILER_TYPE
+
+    session.selections["filer_type"] = "40467"
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.SELECTING_FILING_TYPE
+
+    session.selections["filing_type"] = "EFile"
+    advance_phase_after_selections(session)
+    assert session.phase == FilingPhase.OFFERING_DOCUMENTS
+
+
+def test_court_document_type_selection_stores_code_from_selected_name():
+    """The user picks a document_type_codes ``name``; we keep its ``code``."""
+    from app.agents.utils.db_options_format import (
+        build_selection_options_payload,
+        filter_selections_update,
+        selection_update_for_option,
+    )
+
+    options = [
+        {"code": "197902", "name": "Lead Document"},
+        {"code": "197903", "name": "Attachment"},
+    ]
+    payload = build_selection_options_payload("selecting_doc_type_code", options)
+    assert [opt["label"] for opt in payload["options"]] == [
+        "Lead Document",
+        "Attachment",
+    ]
+
+    update = selection_update_for_option("selecting_doc_type_code", options[0])
+    resolved = filter_selections_update(
+        "selecting_doc_type_code", update, options
+    )
+    assert resolved["doc_type_code"] == "197902"
+    assert resolved["doc_type_name"] == "Lead Document"
+
+
+def test_filing_code_selection_carries_document_type_codes_link():
+    from app.agents.utils.db_options_format import (
+        filter_selections_update,
+        selection_update_for_option,
+    )
+
+    options = [
+        {
+            "code": "151320",
+            "name": "Notice of Appeal",
+            "document_type_codes_url": "https://example.com/document_type_codes",
+        }
+    ]
+    update = selection_update_for_option("selecting_filing_code", options[0])
+    resolved = filter_selections_update("selecting_filing_code", update, options)
+    assert resolved["filing_code"] == "151320"
+    assert (
+        resolved["document_type_codes_url"]
+        == "https://example.com/document_type_codes"
+    )
 
 
 AUTH_TOKEN = "3f1b6c1e-6b4a-4f5e-9a2a-2f5c6a7b8c9d/GENS99/8a7b6c5d-4e3f-4a2b-9c8d-1e2f3a4b5c6d"

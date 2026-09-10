@@ -15,7 +15,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from app.services.uslegalpro_codes_service import CodeBundle
 
 # Kept in sync with ``efile_mapping_service.EXISTING_CASE_EFILE_KEYS`` so a
-# circular import is not required.
+# circular import is not required. ``filer_type`` is part of the shape but is
+# only sent when the court returned filer types, so it is not required here.
 EXISTING_CASE_EFILE_KEYS: tuple[str, ...] = (
     "reference_id",
     "case_tracking_id",

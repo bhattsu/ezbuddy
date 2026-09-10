@@ -470,6 +470,12 @@ async def load_db_options(
         if codes_service and url:
             return await codes_service.fetch_by_url(str(url))
         return []
+    if phase == FilingPhase.SELECTING_DOC_TYPE_CODE:
+        # ``document_type_codes`` is returned on the selected filing-code item.
+        url = selections.get("document_type_codes_url")
+        if codes_service and url:
+            return await codes_service.fetch_by_url(str(url))
+        return []
     if phase == FilingPhase.SELECTING_DOCUMENT_TYPE:
         templates = await filing_repo.list_active_document_templates()
         return match_document_templates(templates, selections)
@@ -500,6 +506,7 @@ _PHASE_CACHE_KEYS = {
     FilingPhase.SELECTING_CASE_PARTIES: "cached_party_types",
     FilingPhase.SELECTING_FILER_TYPE: "cached_filer_types",
     FilingPhase.SELECTING_FILING_CODE: "cached_filing_codes",
+    FilingPhase.SELECTING_DOC_TYPE_CODE: "cached_doc_type_codes",
     FilingPhase.SELECTING_DOCUMENT_TYPE: "cached_document_types",
     FilingPhase.SELECTING_FILING_TYPE: "cached_filing_types",
 }
@@ -608,6 +615,92 @@ def merge_selections(session: FilingSession, update: Dict[str, Any]) -> None:
             session.selections[key] = value
 
 
+# Every link the case-detail response exposes. Each one is cached as
+# ``<key>_url`` so a later phase can call it without re-fetching the case.
+CASE_DETAIL_LINK_KEYS: tuple[str, ...] = (
+    "filing_codes",
+    "filer_type_codes",
+    "filing_type",
+    "party_type_codes",
+    "case_subtype_codes",
+    "name_suffix_codes",
+    "disclaimer_requirement_codes",
+    "location_code",
+    "countries",
+    "states",
+    "case_service_contacts",
+)
+
+
+def _case_detail_link_url(links: Any, key: str) -> str:
+    """Read ``link.<key>.link`` from a case-detail response."""
+    if not isinstance(links, dict):
+        return ""
+    entry = links.get(key)
+    if isinstance(entry, dict):
+        return str(entry.get("link") or entry.get("href") or "").strip()
+    if isinstance(entry, str):
+        return entry.strip()
+    return ""
+
+
+def cache_existing_case_details(
+    session: FilingSession,
+    case_detail: Dict[str, Any],
+) -> None:
+    """Cache the case-detail response so later phases never re-fetch the case.
+
+    Stores the case identity (tracking id, jurisdiction/category/type codes),
+    the parties (``id`` values feed ``filing_party_id``) and every code link
+    the response returned. ``filing_codes_url``, ``filer_type_codes_url`` and
+    ``filing_type_url`` reuse the same selection keys as the new-case flow, so
+    the existing dropdown phases can call them unchanged.
+    """
+    detail = dict(case_detail or {})
+    if not detail:
+        return
+    sel = session.selections
+
+    for source_key, target_key in (
+        ("case_tracking_id", "case_tracking_id"),
+        ("case_number", "case_number"),
+        ("case_title", "case_title"),
+        ("jurisdiction", "jurisdiction_code"),
+        ("case_category", "case_category_code"),
+        ("case_type", "case_type_code"),
+    ):
+        value = str(detail.get(source_key) or "").strip()
+        if value:
+            sel[target_key] = value
+
+    parties = [
+        dict(row)
+        for row in (detail.get("case_parties") or [])
+        if isinstance(row, dict)
+    ]
+    if parties:
+        sel["existing_case_parties"] = parties
+        # ``filing_party_id`` must be a party ``id``, never a party type code.
+        current = str(sel.get("filing_party_id") or "").strip()
+        valid_ids = {str(p.get("id") or "").strip() for p in parties}
+        valid_ids.discard("")
+        if current not in valid_ids:
+            first_id = str(parties[0].get("id") or "").strip()
+            if first_id:
+                sel["filing_party_id"] = first_id
+
+    links = detail.get("link")
+    cached_links: Dict[str, str] = {}
+    for key in CASE_DETAIL_LINK_KEYS:
+        url = _case_detail_link_url(links, key)
+        if not url:
+            continue
+        cached_links[key] = url
+        sel[f"{key}_url"] = url
+    if cached_links:
+        sel["case_detail_links"] = cached_links
+
+
 def apply_existing_search_attrs(
     session: FilingSession,
     search_item: Dict[str, Any],
@@ -678,6 +771,20 @@ def _phase_after_filer_type(sel: Dict[str, Any]) -> "FilingPhase":
     return FilingPhase.OFFERING_DOCUMENTS
 
 
+def _phase_after_case_confirm(sel: Dict[str, Any]) -> "FilingPhase":
+    """Existing case: pick the court filing code, then its document type.
+
+    Both lists come from links cached off the case-detail response. When the
+    court did not return them, fall back to the document-template step so the
+    flow still reaches document generation.
+    """
+    if sel.get("filing_codes_url") and not sel.get("filing_code"):
+        return FilingPhase.SELECTING_FILING_CODE
+    if sel.get("document_type_codes_url") and not sel.get("doc_type_code"):
+        return FilingPhase.SELECTING_DOC_TYPE_CODE
+    return FilingPhase.SELECTING_DOCUMENT_TYPE
+
+
 def advance_phase_after_selections(session: FilingSession) -> None:
     sel = session.selections
     if session.phase == FilingPhase.SELECTING_STATE and sel.get("state_code"):
@@ -742,8 +849,28 @@ def advance_phase_after_selections(session: FilingSession) -> None:
             and sel.get("jurisdiction_code")
         ):
             session.phase = FilingPhase.EXISTING_ENTER_CASE_NUMBER
+        elif session.phase == FilingPhase.SELECTING_FILING_CODE and sel.get(
+            "filing_code"
+        ):
+            # The chosen filing code carries its own document_type_codes link.
+            if sel.get("document_type_codes_url") and not sel.get("doc_type_code"):
+                session.phase = FilingPhase.SELECTING_DOC_TYPE_CODE
+            else:
+                session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        elif session.phase == FilingPhase.SELECTING_DOC_TYPE_CODE and sel.get(
+            "doc_type_code"
+        ):
+            session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
+        ):
+            session.phase = _phase_after_document_type_ready(sel)
+        elif session.phase == FilingPhase.SELECTING_FILER_TYPE and sel.get(
+            "filer_type"
+        ):
+            session.phase = _phase_after_filer_type(sel)
+        elif session.phase == FilingPhase.SELECTING_FILING_TYPE and sel.get(
+            "filing_type"
         ):
             session.phase = FilingPhase.OFFERING_DOCUMENTS
 
@@ -952,7 +1079,7 @@ async def handle_lookup(
             session.selections["case_number"] = case.get("case_number")
             session.phase = FilingPhase.EXISTING_CASE_CONFIRM
     elif action == "confirm_case":
-        session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        session.phase = _phase_after_case_confirm(session.selections)
 
 
 def result_from_session(
