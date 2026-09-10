@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -138,6 +139,22 @@ async def preflight_handler():
 
 
 app.include_router(all_routes)
+
+
+def custom_openapi():
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    from app.api.endpoints.template_ingest import patch_template_ingest_openapi
+
+    patch_template_ingest_openapi(schema)
+    return schema
+
+
+app.openapi = custom_openapi
 
 if __name__ == "__main__":
     import uvicorn

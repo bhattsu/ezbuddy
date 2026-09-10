@@ -13,6 +13,7 @@ from app.api.endpoints import (
     court_form_questions,
     court_rules,
     document_analysis,
+    template_ingest,
 )
 
 all_routes = APIRouter()
@@ -51,6 +52,13 @@ all_routes.include_router(
     tags=["Court Rules Knowledge"],
 )
 
+# Court PDF template ingest (S3 + configuration.document_templates)
+all_routes.include_router(
+    template_ingest.router,
+    prefix="/api/templates",
+    tags=["Template Ingest"],
+)
+
 
 @all_routes.get("/", tags=["Root"])
 async def root():
@@ -73,6 +81,11 @@ async def root():
             },
             "court_form_questions": {
                 "questions": "/api/court-form/questions",
+            },
+            "template_ingest": {
+                "states": "/api/templates/states",
+                "jurisdictions": "/api/templates/jurisdictions?state=TX",
+                "ingest": "/api/templates/ingest",
             },
         },
     }

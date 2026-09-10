@@ -7,6 +7,7 @@ from app.api.endpoints import (
     court_form_questions,
     court_rules,
     document_analysis,
+    template_ingest,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "court_form_questions",
     "court_rules",
     "document_analysis",
+    "template_ingest",
 ]
