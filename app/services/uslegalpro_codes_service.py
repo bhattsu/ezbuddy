@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
+from app.adapters.uslegalpro.tokens import client_token_from_auth_token
+from app.config.settings import settings
 from app.services.uslegalpro_api_client import USLegalProApiClient
 
 logger = logging.getLogger(__name__)
@@ -205,6 +207,20 @@ class USLegalProCodesService:
         self._client = api_client or USLegalProApiClient()
         self._jurisdiction_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._party_type_cache: Dict[tuple[str, str, str, str], List[Dict[str, Any]]] = {}
+
+    @classmethod
+    def for_auth_token(cls, auth_token: str) -> "USLegalProCodesService":
+        """Build a service scoped to the logged-in user's platform session."""
+        token = str(auth_token or "").strip()
+        client_token = (
+            client_token_from_auth_token(token) or settings.USLEGALPRO_CLIENT_TOKEN
+        )
+        return cls(
+            api_client=USLegalProApiClient(
+                auth_token=token,
+                client_token=client_token or None,
+            )
+        )
 
     @staticmethod
     def _items(response: Any) -> List[Dict[str, Any]]:

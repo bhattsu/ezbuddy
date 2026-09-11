@@ -32,6 +32,8 @@ from app.services.court_catalog import (
 from app.adapters.llm.bedrock import Bedrock
 from app.services.document_template_match import match_document_templates
 from app.services.legal_filing_repository import LegalFilingRepository
+from app.adapters.uslegalpro.tokens import resolve_auth_token
+from app.services.operational_user_repository import OperationalUserRepository
 from app.services.uslegalpro_codes_service import USLegalProCodesService
 
 logger = logging.getLogger(__name__)
@@ -400,7 +402,11 @@ async def load_db_options(
     codes_service: Optional[USLegalProCodesService] = None,
     mode: Optional[FilingMode] = None,
     bedrock: Optional[Bedrock] = None,
+    auth_token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    service = codes_service or USLegalProCodesService()
+    if mode == FilingMode.FILING_EXISTING and str(auth_token or "").strip():
+        service = USLegalProCodesService.for_auth_token(str(auth_token).strip())
     if phase in (FilingPhase.GREETING, FilingPhase.INTENT_PENDING):
         if selections.get("state_code"):
             return []
@@ -420,16 +426,16 @@ async def load_db_options(
                     rows, selections, bedrock, phase=phase
                 )
                 return jurisdiction_options(scoped)
-        if codes_service and selections.get("state_code"):
-            return await codes_service.get_jurisdictions(selections["state_code"])
+        if service and selections.get("state_code"):
+            return await service.get_jurisdictions(selections["state_code"])
         return await filing_repo.get_jurisdictions_for_county(
             selections.get("state_code"),
             county_name=selections.get("county_name"),
             county_id=selections.get("county_id"),
         )
     if phase == FilingPhase.EXISTING_SELECTING_JURISDICTION:
-        if codes_service and selections.get("state_code"):
-            return await codes_service.get_jurisdictions(selections["state_code"])
+        if service and selections.get("state_code"):
+            return await service.get_jurisdictions(selections["state_code"])
         return []
     if phase == FilingPhase.SELECTING_CASE_CATEGORY:
         if mode == FilingMode.FILING_NEW:
@@ -437,8 +443,8 @@ async def load_db_options(
             if rows:
                 return category_options(_catalog_rows_for_selected_court(rows, selections))
         url = selections.get("case_category_codes_url")
-        if codes_service and url:
-            return await codes_service.get_case_categories_from_jurisdiction_link(url)
+        if service and url:
+            return await service.get_case_categories_from_jurisdiction_link(url)
         return []
     if phase == FilingPhase.SELECTING_CASE_TYPE:
         if mode == FilingMode.FILING_NEW:
@@ -446,15 +452,15 @@ async def load_db_options(
             if rows:
                 return case_type_options(_catalog_rows_for_selected_court(rows, selections))
         url = selections.get("case_type_codes_url")
-        if codes_service and url:
-            return await codes_service.get_case_types_from_category_link(url)
+        if service and url:
+            return await service.get_case_types_from_category_link(url)
         code = selections.get("jurisdiction_code")
         if code:
             return await filing_repo.get_workflows_for_jurisdiction(code)
         return []
     if phase == FilingPhase.SELECTING_CASE_PARTIES:
-        if codes_service:
-            return await codes_service.get_party_types_for_case_type(
+        if service:
+            return await service.get_party_types_for_case_type(
                 selections.get("state_code"),
                 selections.get("jurisdiction_code"),
                 selections.get("case_category_code"),
@@ -463,29 +469,29 @@ async def load_db_options(
         return []
     if phase == FilingPhase.SELECTING_FILER_TYPE:
         url = selections.get("filer_type_codes_url")
-        if codes_service and url:
-            return await codes_service.fetch_by_url(str(url))
+        if service and url:
+            return await service.fetch_by_url(str(url))
         return []
     if phase == FilingPhase.SELECTING_FILING_CODE:
         url = selections.get("filing_codes_url")
-        if codes_service and url:
-            return await codes_service.fetch_by_url(str(url))
+        if service and url:
+            return await service.fetch_by_url(str(url))
         return []
     if phase == FilingPhase.SELECTING_DOC_TYPE_CODE:
         # ``document_type_codes`` is returned on the selected filing-code item.
         url = selections.get("document_type_codes_url")
-        if codes_service and url:
-            return await codes_service.fetch_by_url(str(url))
+        if service and url:
+            return await service.fetch_by_url(str(url))
         return []
     if phase == FilingPhase.SELECTING_DOCUMENT_TYPE:
         templates = await filing_repo.list_active_document_templates()
         return match_document_templates(templates, selections)
     if phase == FilingPhase.SELECTING_FILING_TYPE:
         url = selections.get("filing_type_url")
-        if codes_service and url:
+        if service and url:
             # filing_type endpoint returns ``{"item": {"EFile": "EFile"}}``,
             # which the standard normalize path cannot read.
-            return await codes_service.fetch_filing_type_by_url(str(url))
+            return await service.fetch_filing_type_by_url(str(url))
         return []
     if phase == FilingPhase.EXISTING_CASE_CONFIRM:
         case = selections.get("case_metadata")
@@ -585,6 +591,7 @@ async def options_for_response(
     codes_service: Optional[USLegalProCodesService] = None,
     bedrock: Optional[Bedrock] = None,
     override: Optional[List[Dict[str, Any]]] = None,
+    auth_token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if override is not None:
         return override
@@ -600,6 +607,7 @@ async def options_for_response(
             codes_service=codes_service,
             mode=session.mode,
             bedrock=bedrock,
+            auth_token=auth_token,
         )
         if phase in (
             FilingPhase.SELECTING_FILER_TYPE,
@@ -732,6 +740,29 @@ _AFFIRM_REPLIES = frozenset(
 
 def is_affirmative_reply(text: str) -> bool:
     return str(text or "").strip().lower() in _AFFIRM_REPLIES
+
+
+async def auth_token_for_user(
+    user_repo: Optional[OperationalUserRepository],
+    user_id: str,
+) -> str:
+    """Return the logged-in user's US Legal Pro auth token, or "" if unavailable."""
+    if not user_repo or not str(user_id or "").strip():
+        return ""
+    try:
+        user_row = await user_repo.get_by_user_id(user_id)
+        return resolve_auth_token(user_row)
+    except ValueError:
+        return ""
+
+
+def format_existing_case_api_error(exc: Exception) -> str:
+    """User-facing message when existing-case search or detail lookup fails."""
+    msg = str(exc).strip()
+    return (
+        "I could not retrieve that case from US Legal Pro. "
+        f"{msg} Please verify the court and case number and try again."
+    )
 
 
 def advance_mode_from_intent(session: FilingSession, intent: str) -> None:

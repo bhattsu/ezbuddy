@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from app.adapters.uslegalpro.tokens import client_token_from_auth_token
 from app.services.uslegalpro_api_client import USLegalProApiClient
@@ -33,23 +33,22 @@ class USLegalProExistingCaseService:
     ) -> Dict[str, Any]:
         client = self._client(auth_token)
         state = state_code.strip().lower()
-        # The API rejects a percent-encoded colon in jurisdiction codes such as
-        # "refugio:dc", so the query string is built with the colon left intact.
-        query = urlencode(
-            {
-                "jurisdiction": jurisdiction_code.strip(),
-                "case_number": case_number.strip(),
-            },
-            safe=":",
-        )
+        params = {
+            "jurisdiction": jurisdiction_code.strip(),
+            "case_number": case_number.strip(),
+        }
         logger.info(
-            "Existing-case search state=%s query=%s clienttoken=%s authtoken=%s",
+            "Existing-case search state=%s params=%s clienttoken=%s authtoken=%s",
             state,
-            query,
+            params,
             client.client_token or "<missing>",
             "present" if client.auth_token else "<missing>",
         )
-        response = await client.get_json(f"/v2/{state}/search_case?{query}")
+        response = await client.get_json(
+            f"/v2/{state}/search_case",
+            params=params,
+            query_safe=":",
+        )
         return dict(response) if isinstance(response, dict) else {"items": []}
 
     async def get_case_details(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -211,13 +212,25 @@ class USLegalProClient:
                 )
             return response.json()
 
-    async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def get_json(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        query_safe: str = "",
+    ) -> Any:
         raw = path.strip()
         if raw.startswith("http://") or raw.startswith("https://"):
             url = raw
         else:
             normalized = normalize_api_endpoint(raw)
             url = f"{self.base_url}{normalized}"
+            if params:
+                # httpx percent-encodes ``:`` in params; Tyler location codes
+                # such as ``refugio:dc`` must keep the colon unescaped.
+                query = urlencode(params, safe=query_safe)
+                joiner = "&" if "?" in url else "?"
+                url = f"{url}{joiner}{query}"
 
         headers = {
             "Accept": "application/json",
@@ -228,7 +241,7 @@ class USLegalProClient:
             response = await client.get(
                 url,
                 # Preserve a query string already present on an API link.
-                params=params if params else None,
+                params=params if params and raw.startswith(("http://", "https://")) else None,
                 headers=headers,
             )
             if response.status_code >= 400:
