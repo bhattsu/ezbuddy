@@ -72,6 +72,7 @@ async def load_history(
 async def persist_system_state(
     conversation_repo: ConversationRepository, session: FilingSession
 ) -> None:
+    sync_checklist_from_answers(session)
     snapshot = {
         "phase": session.phase.value,
         "mode": session.mode.value,
@@ -1001,6 +1002,30 @@ def next_pending_question(session: FilingSession) -> Optional[Dict[str, Any]]:
     return None
 
 
+def sync_checklist_from_answers(session: FilingSession) -> None:
+    """Keep checklist status/value aligned with answers and visibility."""
+    if not session.checklist.items:
+        return
+    answered = session.collected_answers
+    questions = {
+        str(q.get("field_name") or ""): q for q in session.workflow_questions
+    }
+    for item in session.checklist.items:
+        question = questions.get(item.field_name)
+        visible = question_visible(question, answered) if question else True
+        value = answered.get(item.field_name)
+        has_value = value not in (None, "", [], {})
+        if not visible:
+            item.status = "skipped"
+            continue
+        if has_value:
+            item.status = "answered"
+            item.value = value
+        else:
+            item.status = "pending"
+            item.value = None
+
+
 def merge_checklist_updates(
     session: FilingSession, updates: List[Dict[str, Any]]
 ) -> None:
@@ -1090,19 +1115,11 @@ def result_from_session(
     metadata: Optional[Dict[str, Any]] = None,
     analysis: Optional[Dict[str, Any]] = None,
 ) -> OrchestratorResult:
-    checklist_phases = (
-        FilingPhase.OFFERING_DOCUMENTS,
-        FilingPhase.AWAITING_DOCUMENT_UPLOAD,
-        FilingPhase.COLLECTING_WORKFLOW_ANSWERS,
-        FilingPhase.GENERATING_DOCUMENTS,
-        FilingPhase.VERIFYING_PLATFORM_PAYMENT,
-        FilingPhase.VERIFYING_COURT_PAYMENT,
-        FilingPhase.CONFIRMING_EFILE,
-        FilingPhase.COMPLETE,
-    )
-    checklist = (
-        session.checklist.to_payload() if session.phase in checklist_phases else None
-    )
+    if session.checklist.items:
+        sync_checklist_from_answers(session)
+        checklist = session.checklist.to_payload()
+    else:
+        checklist = None
     meta = dict(metadata or {})
     if session.chat_context:
         meta.setdefault("chat_context", list(session.chat_context))
@@ -1186,11 +1203,7 @@ def merge_prefilled_answers(
         for key, value in newly.items()
     ]
     merge_checklist_updates(session, updates)
-    for key, val in session.collected_answers.items():
-        for item in session.checklist.items:
-            if item.field_name == key and item.status != "skipped":
-                item.status = "answered"
-                item.value = val
+    sync_checklist_from_answers(session)
     return newly
 
 
@@ -1281,6 +1294,8 @@ async def analyze_uploads_concurrently(
                     "analysis": payload,
                 }
             except Exception as exc:  # noqa: BLE001
+                from app.services.court_document_validator import NonCourtDocumentError
+
                 logger.warning("Document analysis failed for %s: %s", file_name, exc)
                 return {
                     "ok": False,
@@ -1288,6 +1303,7 @@ async def analyze_uploads_concurrently(
                     "classification": None,
                     "error": str(exc),
                     "analysis": None,
+                    "rejected_non_court": isinstance(exc, NonCourtDocumentError),
                 }
 
     return list(await asyncio.gather(*[_one(item) for item in uploads]))

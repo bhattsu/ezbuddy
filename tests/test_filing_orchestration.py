@@ -11,6 +11,7 @@ from app.agents.conversation.orchestration.helpers import (
     analyze_uploads_concurrently,
     classify_document_offer_reply,
     merge_prefilled_answers,
+    sync_checklist_from_answers,
     uploaded_covers_template,
     workflow_is_complete,
 )
@@ -70,6 +71,24 @@ def test_route_after_message_prepare_offer_and_workflow():
     assert (
         route_after_message_prepare({"phase": FilingPhase.SELECTING_STATE.value})
         == "navigation"
+    )
+    assert (
+        route_after_message_prepare(
+            {
+                "phase": FilingPhase.SELECTING_STATE.value,
+                "next_node": "persist",
+            }
+        )
+        == "persist"
+    )
+    assert (
+        route_after_message_prepare(
+            {
+                "phase": FilingPhase.OFFERING_DOCUMENTS.value,
+                "user_message": "change name to John",
+            }
+        )
+        == "workflow"
     )
 
 
@@ -219,6 +238,32 @@ def test_template_format_from_s3_key_ftl():
     ])
     assert rows[0]["file_name"] == "petition.ftl"
     assert rows[0]["template_format"] == "ftl"
+
+
+def test_sync_checklist_updates_skipped_when_answer_changes():
+    session = FilingSession(conversation_id="c1", user_id="u1")
+    session.workflow_questions = [
+        {"field_name": "PETITIONER_FULL_NAME", "field_label": "Name", "required": True},
+        {"field_name": "CHILDREN", "field_label": "Has children", "required": True},
+    ]
+    session.checklist = WorkflowChecklist(
+        items=[
+            ChecklistItem(field_name="PETITIONER_FULL_NAME", label="Name", status="skipped"),
+            ChecklistItem(field_name="CHILDREN", label="Has children", status="pending"),
+        ]
+    )
+    session.collected_answers = {
+        "PETITIONER_FULL_NAME": "John Doe",
+        "CHILDREN": "no",
+    }
+    sync_checklist_from_answers(session)
+    by_name = {item.field_name: item for item in session.checklist.items}
+    assert by_name["PETITIONER_FULL_NAME"].status == "answered"
+    assert by_name["PETITIONER_FULL_NAME"].value == "John Doe"
+    assert by_name["CHILDREN"].status == "answered"
+    payload = session.checklist.to_payload()
+    assert payload.answered == 2
+    assert payload.total == 2
 
 
 def test_build_filing_graph_has_unified_nodes():

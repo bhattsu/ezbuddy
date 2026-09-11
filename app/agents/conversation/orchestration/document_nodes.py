@@ -248,6 +248,37 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         results = list(state.get("analysis_results") or [])
         successful = [r for r in results if r.get("ok") and r.get("analysis")]
         failed = [r for r in results if not r.get("ok")]
+        rejected = [r for r in results if r.get("rejected_non_court")]
+        if rejected and not successful:
+            from app.services.court_document_validator import (
+                NON_COURT_DOCUMENT_REJECTION_MESSAGE,
+            )
+
+            result = result_from_session(
+                session,
+                NON_COURT_DOCUMENT_REJECTION_MESSAGE,
+                event_kind="assistant.message",
+                metadata={
+                    "files": [
+                        {
+                            "file_name": item.get("file_name"),
+                            "ok": False,
+                            "error": item.get("error"),
+                            "rejected_non_court": True,
+                        }
+                        for item in results
+                    ],
+                    "document_rejected": True,
+                    "required_documents": required_templates(session),
+                },
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
 
         for item in results:
             session.uploaded_documents.append(

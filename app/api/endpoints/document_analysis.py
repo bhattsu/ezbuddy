@@ -14,6 +14,7 @@ from app.api.dependencies.auth import get_optional_auth
 from app.api.dependencies.rate_limit import limiter, rate_limit_string
 from app.api.schemas.document import FileType
 from app.api.schemas.legal_filing import DocumentAnalysisResponse
+from app.services.court_document_validator import NonCourtDocumentError
 from app.services.document_analysis_service import DocumentAnalysisService
 from app.utils.file_utils import FileValidator, TempFileManager
 
@@ -69,6 +70,8 @@ async def analyze_document(
         return result
     except HTTPException:
         raise
+    except NonCourtDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Document analysis failed")
         raise HTTPException(

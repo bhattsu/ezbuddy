@@ -397,7 +397,9 @@
       box-shadow: 0 10px 22px rgba(15, 74, 61, 0.25);
     }
     .btn.ghost { background: transparent; }
-    .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+    .btn:disabled,
+    .btn.is-disabled { opacity: 0.45; cursor: not-allowed; transform: none; pointer-events: none; }
+    .composer.is-waiting textarea:disabled { opacity: 0.7; cursor: wait; }
 
     .chat-toolbar {
       display: flex;
@@ -651,19 +653,19 @@
         </div>
         <div class="quick-replies hidden" id="options"></div>
 
-        <div class="composer">
+        <div class="composer" id="composer">
           <div class="upload-row">
-            <span id="fileLabel">Attach court PDF or DOCX files (optional, multiple allowed)</span>
+            <span id="fileLabel">Upload unlocks after form questions are extracted.</span>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <label class="btn ghost" style="padding:8px 12px;">
+              <label class="btn ghost is-disabled" id="btnUpload" style="padding:8px 12px;">
                 Upload
-                <input type="file" id="fileInput" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+                <input type="file" id="fileInput" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden disabled />
               </label>
-              <button type="button" class="btn ghost" id="btnClearFile" style="padding:8px 12px;">Clear</button>
+              <button type="button" class="btn ghost" id="btnClearFile" style="padding:8px 12px;" disabled>Clear</button>
             </div>
           </div>
           <div class="input-row">
-            <textarea id="message" placeholder="Type your message… e.g. I need to file for divorce"></textarea>
+            <textarea id="message" placeholder="Type your message in English… e.g. I need to file for divorce"></textarea>
             <button class="btn primary" type="button" id="btnSend">Send</button>
           </div>
           <p class="status-line" id="status">Starting live session…</p>
@@ -715,6 +717,10 @@
         livePill: document.getElementById("livePill"),
         liveText: document.getElementById("liveText"),
         typing: document.getElementById("typing"),
+        composer: document.getElementById("composer"),
+        btnSend: document.getElementById("btnSend"),
+        btnUpload: document.getElementById("btnUpload"),
+        btnClearFile: document.getElementById("btnClearFile"),
         apiBase: document.getElementById("apiBase"),
         userId: document.getElementById("userId"),
         userEmail: document.getElementById("userEmail"),
@@ -832,6 +838,14 @@
       let reconnectTimer = null;
       let reconnectAttempts = 0;
       let seeded = false;
+      let waitingForResponse = false;
+      let uploadEnabled = false;
+
+      const UPLOAD_READY_PHASES = new Set([
+        "offering_documents",
+        "awaiting_document_upload",
+        "collecting_workflow_answers",
+      ]);
 
       function setLive(state, text) {
         els.livePill.classList.remove("online", "offline", "connecting");
@@ -847,6 +861,55 @@
 
       function setTyping(on) {
         els.typing.classList.toggle("show", !!on);
+      }
+
+      function updateUploadControls() {
+        const canUpload = uploadEnabled && !waitingForResponse;
+        els.fileInput.disabled = !canUpload;
+        els.btnUpload.classList.toggle("is-disabled", !canUpload);
+        els.btnClearFile.disabled = !canUpload && !selectedFiles.length;
+        if (!canUpload) {
+          if (!uploadEnabled) {
+            els.fileLabel.textContent = "Upload unlocks after form questions are extracted.";
+          } else {
+            els.fileLabel.textContent = "Please wait for the assistant to respond before uploading.";
+          }
+          return;
+        }
+        els.fileLabel.textContent = selectedFiles.length
+          ? `Selected: ${selectedFiles.map((f) => f.name).join(", ")}`
+          : "Attach court PDF or DOCX files (optional, multiple allowed)";
+      }
+
+      function setUploadEnabled(enabled) {
+        uploadEnabled = !!enabled;
+        if (!uploadEnabled) {
+          selectedFiles = [];
+          els.fileInput.value = "";
+        }
+        updateUploadControls();
+      }
+
+      function lockComposer() {
+        waitingForResponse = true;
+        els.btnSend.disabled = true;
+        els.message.disabled = true;
+        els.composer.classList.add("is-waiting");
+        updateUploadControls();
+      }
+
+      function unlockComposer() {
+        waitingForResponse = false;
+        els.btnSend.disabled = false;
+        els.message.disabled = false;
+        els.composer.classList.remove("is-waiting");
+        updateUploadControls();
+      }
+
+      function syncUploadFromPhase(phase) {
+        if (phase && UPLOAD_READY_PHASES.has(String(phase))) {
+          setUploadEnabled(true);
+        }
       }
 
       function showToast(payload) {
@@ -978,6 +1041,10 @@
         submit.className = "btn primary";
         submit.textContent = "Use selection";
         submit.addEventListener("click", () => {
+          if (waitingForResponse) {
+            setStatus("Please wait for the assistant to respond.", "error");
+            return;
+          }
           const chosen = select.value;
           if (!chosen) {
             setStatus("Choose an option from the dropdown first.", "error");
@@ -1009,11 +1076,18 @@
         const type = data.type;
         const payload = data.payload || {};
         if (type === "notification") {
+          const process = String(payload.process || "");
+          if (process === "extracting_questions" || process === "loading_questions") {
+            setUploadEnabled(false);
+          } else if (process === "questions_ready") {
+            setUploadEnabled(true);
+          }
           showToast(payload);
           return;
         }
 
         setTyping(false);
+        unlockComposer();
         const cid = data.conversation_id || payload.conversation_id;
 
         if (type === "error") {
@@ -1033,7 +1107,12 @@
           if (!seeded) { clearChat(); seeded = true; }
           addBubble("assistant", payload.message || "");
           els.stateCode.textContent = payload.phase ? `phase ${payload.phase}` : "phase —";
+          syncUploadFromPhase(payload.phase);
           renderSelectionOptions(payload.selection_options);
+          if (payload.checklist) {
+            const c = payload.checklist;
+            addBubble("system", `Checklist: ${c.answered}/${c.total} answered`);
+          }
           setStatus("Session started", "ok");
           return;
         }
@@ -1041,6 +1120,7 @@
         if (type === "assistant.message") {
           addBubble("assistant", payload.message || "");
           if (payload.phase) els.stateCode.textContent = `phase ${payload.phase}`;
+          syncUploadFromPhase(payload.phase);
           renderSelectionOptions(payload.selection_options);
           if (payload.checklist) {
             const c = payload.checklist;
@@ -1053,6 +1133,10 @@
         if (type === "workflow.complete") {
           addBubble("assistant", "All workflow questions collected.");
           addBubble("system", JSON.stringify(payload.collected_data || {}, null, 2));
+          if (payload.checklist) {
+            const c = payload.checklist;
+            addBubble("system", `Checklist: ${c.answered}/${c.total} answered`);
+          }
           setStatus("Workflow complete", "ok");
           return;
         }
@@ -1065,6 +1149,7 @@
         }
 
         if (type === "analysis.complete") {
+          setUploadEnabled(true);
           addBubble("assistant", payload.message || "Document analyzed.");
           if (payload.prefilled_fields && Object.keys(payload.prefilled_fields).length) {
             addBubble("system", "Pre-filled:\n" + JSON.stringify(payload.prefilled_fields, null, 2));
@@ -1081,8 +1166,13 @@
         }
 
         if (type === "documents.offer") {
+          setUploadEnabled(true);
           addBubble("assistant", payload.message || "");
           if (payload.phase) els.stateCode.textContent = `phase ${payload.phase}`;
+          if (payload.checklist) {
+            const c = payload.checklist;
+            addBubble("system", `Checklist: ${c.answered}/${c.total} answered`);
+          }
           const docs = payload.required_documents || [];
           if (docs.length) {
             addBubble("system", "Required documents: " + docs.map((d) => d.template_name || d.template_code || d.file_name).join(", "));
@@ -1107,6 +1197,10 @@
             );
           }
           addBubble("system", JSON.stringify(payload.collected_data || {}, null, 2));
+          if (payload.checklist) {
+            const c = payload.checklist;
+            addBubble("system", `Checklist: ${c.answered}/${c.total} answered`);
+          }
           const documents = payload.documents || [];
           documents.forEach((doc) => {
             const label = doc.file_name || doc.template_name || doc.template_code || "case_document.pdf";
@@ -1174,12 +1268,15 @@
         setLive("connecting", "Connecting…");
         setStatus(`Connecting to ${wsUrl()}…`);
         setTyping(true);
+        lockComposer();
+        setUploadEnabled(false);
 
         let socket;
         try {
           socket = new WebSocket(wsUrl());
         } catch (err) {
           setTyping(false);
+          unlockComposer();
           setLive("offline", "Offline");
           setStatus(`WebSocket failed: ${err.message || err}`, "error");
           scheduleReconnect();
@@ -1206,11 +1303,13 @@
 
         socket.onerror = () => {
           setTyping(false);
+          unlockComposer();
           setStatus("WebSocket error — is the backend running on " + apiBase + "?", "error");
         };
 
         socket.onclose = () => {
           setTyping(false);
+          unlockComposer();
           setLive("offline", "Disconnected");
           if (!intentionalClose) {
             setStatus("WebSocket closed. Reconnecting…", "error");
@@ -1243,6 +1342,11 @@
       }
 
       async function sendMessage() {
+        if (waitingForResponse) {
+          setStatus("Please wait for the assistant to respond.", "error");
+          return;
+        }
+
         const text = els.message.value.trim();
         if (!text && !selectedFiles.length) {
           setStatus("Enter a message or choose a file.", "error");
@@ -1259,10 +1363,16 @@
           return;
         }
 
+        if (selectedFiles.length && !uploadEnabled) {
+          setStatus("Upload is not available until form questions are extracted.", "error");
+          return;
+        }
+
         addBubble("user", text || `[files: ${selectedFiles.map((f) => f.name).join(", ")}]`);
         els.message.value = "";
         clearSelectionOptions();
         setTyping(true);
+        lockComposer();
 
         try {
           if (selectedFiles.length) {
@@ -1285,7 +1395,7 @@
             ws.send(JSON.stringify(payload));
             selectedFiles = [];
             els.fileInput.value = "";
-            els.fileLabel.textContent = "Attach court PDF or DOCX files (optional, multiple allowed)";
+            updateUploadControls();
             setStatus("Upload sent via WebSocket", "ok");
             return;
           }
@@ -1298,6 +1408,7 @@
           setStatus("Sent via WebSocket", "ok");
         } catch (err) {
           setTyping(false);
+          unlockComposer();
           setStatus(err.message || String(err), "error");
         }
       }
@@ -1323,6 +1434,7 @@
       document.getElementById("btnNewChat").addEventListener("click", () => {
         conversationId = null;
         seeded = false;
+        setUploadEnabled(false);
         clearChat();
         addBubble("system", "Starting a new conversation…");
         connectWebSocket();
@@ -1330,7 +1442,7 @@
       document.getElementById("btnClearFile").addEventListener("click", () => {
         selectedFiles = [];
         els.fileInput.value = "";
-        els.fileLabel.textContent = "Attach court PDF or DOCX files (optional, multiple allowed)";
+        updateUploadControls();
         els.message.value = "";
         clearSelectionOptions();
         if (els.htmlPreview) els.htmlPreview.classList.remove("show");
@@ -1346,17 +1458,25 @@
         els.message.focus();
       });
       els.fileInput.addEventListener("change", () => {
+        if (!uploadEnabled || waitingForResponse) {
+          selectedFiles = [];
+          els.fileInput.value = "";
+          updateUploadControls();
+          return;
+        }
         selectedFiles = Array.from(els.fileInput.files || []);
-        els.fileLabel.textContent = selectedFiles.length
-          ? `Selected: ${selectedFiles.map((f) => f.name).join(", ")}`
-          : "Attach court PDF or DOCX files (optional, multiple allowed)";
+        updateUploadControls();
       });
       els.message.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
+          if (waitingForResponse) return;
           sendMessage();
         }
       });
+
+      setUploadEnabled(false);
+      updateUploadControls();
 
       window.addEventListener("beforeunload", () => {
         intentionalClose = true;

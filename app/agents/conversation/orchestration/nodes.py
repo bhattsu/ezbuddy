@@ -39,8 +39,13 @@ from app.agents.conversation.orchestration.helpers import (
     prefetch_court_catalog,
     restore_from_system_messages,
     result_from_session,
+    sync_checklist_from_answers,
     uploads_from_state,
     workflow_is_complete,
+)
+from app.agents.conversation.orchestration.detail_corrections import (
+    apply_chat_detail_corrections,
+    correction_summary,
 )
 from app.agents.conversation.orchestration.session_manager import FilingSessionManager
 from app.agents.conversation.orchestration.state import (
@@ -56,6 +61,10 @@ from app.agents.utils.db_options_format import (
     match_option,
     option_label,
     selection_update_for_option,
+)
+from app.agents.utils.language_policy import (
+    ENGLISH_ONLY_REJECTION_MESSAGE,
+    is_english_text,
 )
 from app.agents.utils.text_sanitize import sanitize_assistant_text
 from app.agents.utils.workflow_batch import (
@@ -577,6 +586,20 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             restore_from_system_messages(rows, session)
 
         content = state.get("user_message") or ""
+        if not is_english_text(content):
+            return {
+                **state,
+                "phase": session.phase.value,
+                "user_id": user_id,
+                "user_message": "",
+                "skip_user_persist": True,
+                "result": result_from_session(
+                    session,
+                    ENGLISH_ONLY_REJECTION_MESSAGE,
+                    metadata={"language_rejected": True},
+                ),
+                "next_node": "persist",
+            }
         await ctx.conversation_repo.insert_user_message(cid, content)
         history = await load_history(ctx.conversation_repo, cid, session=session)
 
@@ -614,6 +637,38 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "phase": session.phase.value,
                 "analysis_results": analysis_results,
                 "next_node": "analyze_and_prefill",
+            }
+
+        rejected = [r for r in analysis_results if r.get("rejected_non_court")]
+        successful_preview = [r for r in analysis_results if r.get("ok") and r.get("analysis")]
+        if rejected and not successful_preview:
+            from app.services.court_document_validator import (
+                NON_COURT_DOCUMENT_REJECTION_MESSAGE,
+            )
+
+            result = result_from_session(
+                session,
+                NON_COURT_DOCUMENT_REJECTION_MESSAGE,
+                event_kind="assistant.message",
+                metadata={
+                    "files": [
+                        {
+                            "file_name": item.get("file_name"),
+                            "ok": False,
+                            "error": item.get("error"),
+                            "rejected_non_court": True,
+                        }
+                        for item in analysis_results
+                    ],
+                    "document_rejected": True,
+                },
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
             }
 
         session.mode = FilingMode.FILING_EXISTING
@@ -1282,6 +1337,15 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         await ctx.notify("collecting_workflow_answers")
         history = history_for_llm(session, state.get("history") or [])
         user_message = state.get("user_message") or ""
+        entered_from_offer = session.phase in (
+            FilingPhase.OFFERING_DOCUMENTS,
+            FilingPhase.AWAITING_DOCUMENT_UPLOAD,
+        )
+        offer_phase = session.phase
+        correction_fields = apply_chat_detail_corrections(session, user_message)
+        if correction_fields:
+            session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+            sync_checklist_from_answers(session)
 
         next_q = next_pending_question(session)
         from_template = bool(session.selections.get("template_questions_ready"))
@@ -1351,11 +1415,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 ],
             )
 
-        for key, val in session.collected_answers.items():
-            for item in session.checklist.items:
-                if item.field_name == key and item.status != "skipped":
-                    item.status = "answered"
-                    item.value = val
+        sync_checklist_from_answers(session)
 
         leftover = next_pending_question(session)
         if from_template:
@@ -1364,6 +1424,30 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             complete = bool(llm_out.get("workflow_complete")) or workflow_is_complete(
                 session
             )
+        if complete and entered_from_offer:
+            session.phase = offer_phase
+            note = correction_summary(correction_fields, session)
+            assistant_message = (
+                (note + " You can upload documents or say that is all to continue.")
+                if note
+                else "I updated your details. You can upload documents or say that is all to continue."
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            result = OrchestratorResult(
+                assistant_message=assistant_message,
+                conversation_id=session.conversation_id,
+                phase=session.phase,
+                mode=session.mode,
+                selections=session.selections,
+                collected_answers=session.collected_answers,
+                checklist=session.checklist.to_payload(),
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
         if complete:
             session.phase = FilingPhase.GENERATING_DOCUMENTS
             await persist_system_state(ctx.conversation_repo, session)
@@ -1374,6 +1458,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             }
 
         assistant_message = str(llm_out.get("assistant_message") or "").strip()
+        note = correction_summary(correction_fields, session)
+        if note and note.lower() not in assistant_message.lower():
+            assistant_message = f"{note} {assistant_message}".strip()
         if not assistant_message and leftover:
             assistant_message = str(
                 leftover.get("field_label")
@@ -1413,6 +1500,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             return {**state, "result": result}
 
         if session:
+            sync_checklist_from_answers(session)
+            if session.checklist.items:
+                result.checklist = session.checklist.to_payload()
             append_chat_turn(
                 session,
                 state.get("user_message") or "",

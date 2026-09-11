@@ -110,6 +110,7 @@ class SessionStartedPayload(BaseModel):
     history: List[Dict[str, Any]] = Field(default_factory=list)
     chat_context: List[ChatTurnModel] = Field(default_factory=list)
     selection_options: Optional[SelectionOptionsPayload] = None
+    checklist: Optional[ChecklistPayload] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
