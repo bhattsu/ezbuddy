@@ -25,6 +25,8 @@ from app.agents.conversation.orchestration.helpers import (
     cache_existing_case_details,
     cache_phase_options,
     capture_new_case_topic,
+    auth_token_for_user,
+    format_existing_case_api_error,
     get_session,
     handle_lookup,
     init_workflow_phase,
@@ -74,7 +76,7 @@ from app.agents.utils.workflow_batch import (
     format_next_form_question_message,
     list_all_pending_questions,
 )
-from app.adapters.uslegalpro.tokens import resolve_auth_token
+from app.adapters.uslegalpro.client import USLegalProApiError
 from app.api.schemas.filing_events import FilingMode, FilingPhase
 from app.core.prompts.document_offer import DOCUMENT_OFFER_USER_MESSAGE
 from app.core.prompts.filing_assistant import (
@@ -183,6 +185,72 @@ def _format_existing_case_confirmation(
         f"- Case type: {case_type}"
         f"{party_text}\n\nIs this the correct case?"
     )
+
+
+async def _finalize_existing_case_lookup(
+    ctx: FilingOrchestratorContext,
+    session: FilingSession,
+    *,
+    state_code: str,
+    auth_token: str,
+    tracking_id: str,
+    search_item: Dict[str, Any],
+    detail_link: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Load case detail, cache selections, and advance to confirmation."""
+    case_detail: Dict[str, Any] = {}
+    detail_error = ""
+    try:
+        await ctx.notify("loading_case_details")
+        detail_response = await ctx.existing_case_service.get_case_details(
+            state_code=state_code,
+            case_tracking_id=tracking_id,
+            auth_token=auth_token,
+            case_detail_link=dict(detail_link or {}),
+            case_detail_url=str((detail_link or {}).get("link") or ""),
+        )
+        case_detail = ctx.existing_case_service.detail_item(detail_response)
+    except USLegalProApiError as detail_exc:
+        detail_error = str(detail_exc)
+        logger.warning(
+            "Case detail unavailable for %s: %s",
+            tracking_id,
+            detail_error,
+        )
+    except Exception as detail_exc:  # noqa: BLE001
+        detail_error = str(detail_exc)
+        logger.warning(
+            "Case detail unavailable for %s: %s",
+            tracking_id,
+            detail_error,
+        )
+
+    parties = case_detail.get("case_parties") or []
+    filing_party_id = (
+        parties[0].get("id")
+        if parties and isinstance(parties[0], dict)
+        else None
+    )
+    session.selections.update(
+        {
+            "case_tracking_id": tracking_id,
+            "case_search_result": search_item,
+            "case_metadata": case_detail or search_item,
+            "case_details": case_detail,
+            "filing_party_id": filing_party_id,
+        }
+    )
+    cache_existing_case_details(session, case_detail)
+    apply_existing_search_attrs(session, search_item, case_detail)
+    session.phase = FilingPhase.EXISTING_CASE_CONFIRM
+    await ctx.notify("existing_case_confirm")
+    existing_api_message = _format_existing_case_confirmation(search_item, case_detail)
+    if detail_error:
+        existing_api_message += (
+            "\n\nFull case details could not be loaded "
+            f"({detail_error})"
+        )
+    return existing_api_message
 
 
 def _is_valid_envelope_id(value: str) -> bool:
@@ -626,11 +694,15 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             if history:
                 last = history[-1].get("content", "")
                 result = result_from_session(session, last, event_kind="session.started")
+                connect_auth_token = await auth_token_for_user(
+                    ctx.user_repo, session.user_id
+                )
                 response_options = await options_for_response(
                     ctx.filing_repo,
                     session,
                     codes_service=ctx.codes_service,
                     bedrock=ctx.bedrock,
+                    auth_token=connect_auth_token or None,
                 )
                 result = attach_selection_options_to_result(
                     result, session.phase, response_options
@@ -852,6 +924,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             ctx.filing_repo, session, user_message, bedrock=ctx.bedrock
         )
 
+        session_auth_token = await auth_token_for_user(
+            ctx.user_repo, session.user_id
+        )
         db_options = await load_db_options(
             ctx.filing_repo,
             session.phase,
@@ -859,6 +934,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             codes_service=ctx.codes_service,
             mode=session.mode,
             bedrock=ctx.bedrock,
+            auth_token=session_auth_token or None,
         )
         cache_phase_options(session, session.phase, db_options)
 
@@ -982,34 +1058,36 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         merge_selections(session, validated)
         existing_api_message = ""
         existing_api_handled = False
+        case_number_input = str(session.selections.get("case_number") or "").strip()
         if (
             session.mode == FilingMode.FILING_EXISTING
             and session.phase == FilingPhase.EXISTING_ENTER_CASE_NUMBER
-            and session.selections.get("case_number")
+            and case_number_input
         ):
             existing_api_handled = True
-            await ctx.notify("searching_existing_case")
             state_code = str(session.selections.get("state_code") or "")
             jurisdiction_code = str(
                 session.selections.get("jurisdiction_code") or ""
             )
-            case_number = str(session.selections.get("case_number") or "")
             try:
-                user_row = (
-                    await ctx.user_repo.get_by_user_id(session.user_id)
-                    if ctx.user_repo
-                    else None
+                auth_token = session_auth_token or await auth_token_for_user(
+                    ctx.user_repo, session.user_id
                 )
-                auth_token = resolve_auth_token(user_row)
+                if not auth_token:
+                    raise ValueError(
+                        "No US Legal Pro authentication token is available. "
+                        "Please sign in again."
+                    )
                 logger.info(
                     "Existing-case auth token source=operational.users platform_user=%s",
                     auth_token.split("/")[0],
                 )
 
+                await ctx.notify("searching_existing_case")
                 search_response = await ctx.existing_case_service.search_case(
                     state_code=state_code,
                     jurisdiction_code=jurisdiction_code,
-                    case_number=case_number,
+                    case_number=case_number_input,
                     auth_token=auth_token,
                 )
                 search_items = ctx.existing_case_service.search_items(
@@ -1021,6 +1099,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                         "No case was found for that case number and jurisdiction. "
                         "Please verify both values and try again."
                     )
+                    session.selections.pop("case_number", None)
                 else:
                     search_item = search_items[0]
                     tracking_id = str(
@@ -1033,70 +1112,28 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     detail_link = ctx.existing_case_service.case_detail_link(
                         search_item
                     )
-                    # Case detail is restricted for some account types, so the
-                    # search result alone is enough to confirm the case.
-                    case_detail: Dict[str, Any] = {}
-                    detail_error = ""
-                    try:
-                        await ctx.notify("loading_case_details")
-                        detail_response = (
-                            await ctx.existing_case_service.get_case_details(
-                                state_code=state_code,
-                                case_tracking_id=tracking_id,
-                                auth_token=auth_token,
-                                case_detail_link=detail_link,
-                                case_detail_url=str(
-                                    detail_link.get("link") or ""
-                                ),
-                            )
-                        )
-                        case_detail = ctx.existing_case_service.detail_item(
-                            detail_response
-                        )
-                    except Exception as detail_exc:  # noqa: BLE001
-                        detail_error = str(detail_exc)
-                        logger.warning(
-                            "Case detail unavailable for %s: %s",
-                            tracking_id,
-                            detail_error,
-                        )
-
-                    parties = case_detail.get("case_parties") or []
-                    filing_party_id = (
-                        parties[0].get("id")
-                        if parties and isinstance(parties[0], dict)
-                        else None
+                    existing_api_message = await _finalize_existing_case_lookup(
+                        ctx,
+                        session,
+                        state_code=state_code,
+                        auth_token=auth_token,
+                        tracking_id=tracking_id,
+                        search_item=search_item,
+                        detail_link=detail_link,
                     )
-                    session.selections.update(
-                        {
-                            "case_tracking_id": tracking_id,
-                            "case_search_result": search_item,
-                            "case_metadata": case_detail or search_item,
-                            "case_details": case_detail,
-                            "filing_party_id": filing_party_id,
-                        }
-                    )
-                    # Cache the whole detail response (codes, parties, links)
-                    # so the filing-code and document-type steps can follow
-                    # its links without calling the case API again.
-                    cache_existing_case_details(session, case_detail)
-                    apply_existing_search_attrs(session, search_item, case_detail)
-                    session.phase = FilingPhase.EXISTING_CASE_CONFIRM
-                    await ctx.notify("existing_case_confirm")
-                    existing_api_message = _format_existing_case_confirmation(
-                        search_item, case_detail
-                    )
-                    if detail_error:
-                        existing_api_message += (
-                            "\n\nFull case details could not be loaded "
-                            f"({detail_error})"
-                        )
+            except USLegalProApiError as exc:
+                logger.warning(
+                    "Existing-case API lookup failed state=%s jurisdiction=%s: %s",
+                    state_code,
+                    jurisdiction_code,
+                    exc,
+                )
+                existing_api_message = format_existing_case_api_error(exc)
+                session.selections.pop("case_number", None)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Existing-case API lookup failed")
-                existing_api_message = (
-                    "I could not retrieve that case from US Legal Pro. "
-                    f"{exc}"
-                )
+                existing_api_message = format_existing_case_api_error(exc)
+                session.selections.pop("case_number", None)
 
         phase_before = session.phase
         lookup_action = None if existing_api_handled else llm_out.get("lookup_action")
@@ -1220,6 +1257,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     codes_service=ctx.codes_service,
                     mode=session.mode,
                     bedrock=ctx.bedrock,
+                    auth_token=session_auth_token or None,
                 )
                 built = build_phase_selection_message(
                     session.phase.value, session.selections, next_options
@@ -1328,6 +1366,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             codes_service=ctx.codes_service,
             bedrock=ctx.bedrock,
             override=response_options_override,
+            auth_token=session_auth_token or None,
         )
         result = result_from_session(
             session, sanitize_assistant_text(assistant_message)

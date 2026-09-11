@@ -29,8 +29,14 @@ class USLegalProApiClient:
         self.auth_token = self._client.auth_token
         self.timeout_seconds = self._client.timeout_seconds
 
-    async def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        return await self._client.get_json(path, params=params)
+    async def get_json(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        query_safe: str = "",
+    ) -> Any:
+        return await self._client.get_json(path, params=params, query_safe=query_safe)
 
     async def get_payment_accounts(self, state: str) -> dict[str, Any]:
         return await self._client.get_payment_accounts(state)

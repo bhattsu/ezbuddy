@@ -1,4 +1,4 @@
-name: Deploy to ECS
+name: Deploy to ecs
 
 on:
   push:
@@ -25,7 +25,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::604764467261:role/ezbuddyGithubDeployRole
+          role-to-assume: ${{ secrets.OIDC_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
@@ -55,6 +55,23 @@ jobs:
           task-definition: task-def.json
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.build-image.outputs.image }}
+
+      # ECS container health check must not rely on curl (not in python:slim).
+      # Use stdlib urllib so in-container probes match ALB /api/health/.
+      - name: Patch container health check in task definition
+        run: |
+          python scripts/patch_ecs_health_check.py \
+            --task-def-json "${{ steps.task-def.outputs.task-definition }}" \
+            --output task-def-register.json
+          cp task-def-register.json "${{ steps.task-def.outputs.task-definition }}"
+
+      - name: Set health check grace period on service
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --health-check-grace-period-seconds 120 \
+            --no-cli-pager
 
       - name: Deploy to ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2

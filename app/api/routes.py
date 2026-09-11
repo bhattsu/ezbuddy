@@ -13,10 +13,18 @@ from app.api.endpoints import (
     court_form_questions,
     court_rules,
     document_analysis,
+    idp_health,
     template_ingest,
 )
 
 all_routes = APIRouter()
+
+# Container / load balancer probes
+all_routes.include_router(
+    idp_health.router,
+    prefix="/api/health",
+    tags=["Health"],
+)
 
 # Filing chat WebSocket lives on this router (/chatbot/ws)
 all_routes.include_router(chatbot.router, prefix="/chatbot", tags=["Chatbot"])
@@ -60,6 +68,12 @@ all_routes.include_router(
 )
 
 
+@all_routes.get("/api/health", tags=["Health"], include_in_schema=False)
+async def health_check_no_slash():
+    """Alias so probes hitting /api/health get 200 instead of a 307 redirect."""
+    return await idp_health.health_check()
+
+
 @all_routes.get("/", tags=["Root"])
 async def root():
     """API root with documentation links and endpoint index."""
@@ -68,6 +82,11 @@ async def root():
         "docs": "/docs",
         "redoc": "/redoc",
         "endpoints": {
+            "health": {
+                "health": "/api/health/",
+                "liveness": "/api/health/live",
+                "readiness": "/api/health/ready",
+            },
             "legal_filing_chatbot": {
                 "login": "/auth/login",
                 "websocket": "/chatbot/ws",
