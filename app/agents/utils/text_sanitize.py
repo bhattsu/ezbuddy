@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from app.agents.utils.language_policy import english_or_fallback
+
 # Common emoji / symbol ranges used in chat model output
 _EMOJI_RE = re.compile(
     "["
@@ -30,4 +32,4 @@ def sanitize_assistant_text(text: str) -> str:
     cleaned = cleaned.replace("**", "")
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
-    return cleaned.strip()
+    return english_or_fallback(cleaned.strip())

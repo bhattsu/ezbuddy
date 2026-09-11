@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.conversation.orchestration.context import FilingOrchestratorContext
@@ -21,6 +22,7 @@ from app.agents.conversation.orchestration.helpers import (
     apply_existing_search_attrs,
     attach_selection_options_to_result,
     build_checklist_from_questions,
+    cache_existing_case_details,
     cache_phase_options,
     capture_new_case_topic,
     get_session,
@@ -38,8 +40,13 @@ from app.agents.conversation.orchestration.helpers import (
     prefetch_court_catalog,
     restore_from_system_messages,
     result_from_session,
+    sync_checklist_from_answers,
     uploads_from_state,
     workflow_is_complete,
+)
+from app.agents.conversation.orchestration.detail_corrections import (
+    apply_chat_detail_corrections,
+    correction_summary,
 )
 from app.agents.conversation.orchestration.session_manager import FilingSessionManager
 from app.agents.conversation.orchestration.state import (
@@ -55,6 +62,10 @@ from app.agents.utils.db_options_format import (
     match_option,
     option_label,
     selection_update_for_option,
+)
+from app.agents.utils.language_policy import (
+    ENGLISH_ONLY_REJECTION_MESSAGE,
+    is_english_text,
 )
 from app.agents.utils.text_sanitize import sanitize_assistant_text
 from app.agents.utils.workflow_batch import (
@@ -81,7 +92,7 @@ from app.services.process_notifications import loading_process_for_phase
 logger = logging.getLogger(__name__)
 
 NodeFn = Callable[[FilingGraphState], Any]
-_ENVELOPE_ID_RE = re.compile(r"\b[A-Za-z0-9_-]{3,64}\b")
+_ENVELOPE_ID_NUMERIC_RE = re.compile(r"\b(\d{4,64})\b")
 
 
 def _session_snapshot(session: FilingSession) -> Dict[str, str]:
@@ -98,8 +109,11 @@ SELECTION_PHASES = (
     FilingPhase.SELECTING_CASE_CATEGORY,
     FilingPhase.SELECTING_CASE_TYPE,
     FilingPhase.SELECTING_CASE_PARTIES,
+    FilingPhase.SELECTING_FILER_TYPE,
     FilingPhase.SELECTING_FILING_CODE,
+    FilingPhase.SELECTING_DOC_TYPE_CODE,
     FilingPhase.SELECTING_DOCUMENT_TYPE,
+    FilingPhase.SELECTING_FILING_TYPE,
     FilingPhase.EXISTING_SELECTING_STATE,
     FilingPhase.EXISTING_SELECTING_JURISDICTION,
 )
@@ -171,38 +185,125 @@ def _format_existing_case_confirmation(
     )
 
 
+def _is_valid_envelope_id(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(_ENVELOPE_ID_NUMERIC_RE.fullmatch(text))
+
+
 def _extract_envelope_id(text: str) -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
-    numeric = re.findall(r"\b\d{4,}\b", raw)
-    if numeric:
-        return numeric[-1]
-    tokens = _ENVELOPE_ID_RE.findall(raw)
-    return tokens[-1] if tokens else ""
+    if _is_valid_envelope_id(raw):
+        return raw
+    matches = _ENVELOPE_ID_NUMERIC_RE.findall(raw)
+    return matches[-1] if matches else ""
+
+
+def _resolve_envelope_id_for_status_check(
+    lookup_params: Dict[str, Any],
+    session: FilingSession,
+    user_message: str,
+) -> str:
+    pending = bool(session.selections.get("pending_envelope_status_check"))
+    candidates = [
+        lookup_params.get("envelope_id"),
+        None if pending else session.selections.get("envelope_id"),
+        _extract_envelope_id(user_message),
+    ]
+    if pending:
+        typed = str(user_message or "").strip()
+        if typed and typed != GREETING_USER_MESSAGE:
+            candidates.append(typed)
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if _is_valid_envelope_id(text):
+            return text
+    return ""
+
+
+def _format_envelope_submitted_on(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace(".0Z", "Z") if text.endswith(".0Z") else text
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+        try:
+            dt = datetime.strptime(normalized, fmt)
+            return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+        except ValueError:
+            continue
+    return text
+
+
+def _summarize_filing_status(
+    row: Dict[str, Any],
+    *,
+    envelope_status: str,
+) -> str:
+    file_name = str(row.get("file_name") or "document").strip()
+    filing_status = str(row.get("status") or envelope_status or "unknown").strip()
+    reviewer_comment = str(row.get("reviewer_comment") or "").strip()
+    status_reason = str(row.get("status_reason") or "").strip()
+
+    summary = f"{file_name} has status '{filing_status}'"
+    court_notes: List[str] = []
+    if reviewer_comment:
+        court_notes.append(f"reviewer comment: {reviewer_comment}")
+    if status_reason:
+        court_notes.append(f"status reason: {status_reason}")
+    if court_notes:
+        summary += f" ({'; '.join(court_notes)})"
+    else:
+        summary += " (the court has not provided a reviewer comment or status reason yet)"
+    return summary
 
 
 def _envelope_status_message(item: Dict[str, Any], envelope_id: str) -> str:
     status = str(item.get("status") or item.get("envelope_status") or "unknown").strip()
-    submitted_on = str(item.get("submitted_on") or "").strip()
+    submitter = item.get("submitter")
+    submitter_name = ""
+    if isinstance(submitter, dict):
+        submitter_name = str(submitter.get("full_name") or "").strip()
+    submitted_on = _format_envelope_submitted_on(str(item.get("submitted_on") or ""))
     case_number = str(item.get("case_number") or "").strip()
-    reason = str(item.get("status_reason") or item.get("reviewer_comment") or "").strip()
-    parts = [f"The filing envelope {envelope_id} is currently {status}."]
+    client_matter = str(item.get("client_matter_number") or "").strip()
+    case_tracking_id = str(item.get("case_tracking_id") or "").strip()
+    envelope_fees = item.get("envelope_fees")
+
+    parts = [f"Your filing envelope {envelope_id} has status '{status}'."]
+    if submitter_name:
+        parts.append(f"It was filed by {submitter_name}.")
     if submitted_on:
         parts.append(f"It was submitted on {submitted_on}.")
-    if case_number:
-        parts.append(f"Case number: {case_number}.")
+    if client_matter:
+        parts.append(f"Client matter number: {client_matter}.")
+
     filings = item.get("filings")
     if isinstance(filings, list) and filings:
-        filing_states = [
-            str(row.get("status") or "").strip()
-            for row in filings
-            if isinstance(row, dict) and str(row.get("status") or "").strip()
-        ]
-        if filing_states:
-            parts.append("Document statuses: " + ", ".join(filing_states) + ".")
-    if reason:
-        parts.append(f"Court note: {reason}.")
+        filing_lines: List[str] = []
+        for row in filings:
+            if not isinstance(row, dict):
+                continue
+            filing_lines.append(
+                _summarize_filing_status(row, envelope_status=status)
+            )
+        if filing_lines:
+            parts.append(
+                "Document status: " + "; ".join(filing_lines) + "."
+            )
+
+    if case_number:
+        parts.append(f"Case number: {case_number}.")
+    elif not case_number:
+        parts.append("A case number has not been assigned yet.")
+
+    if case_tracking_id:
+        parts.append(f"Case tracking ID: {case_tracking_id}.")
+
+    if envelope_fees not in (None, "", [], {}):
+        parts.append(f"Envelope fees: {envelope_fees}.")
+
     return " ".join(parts)
 
 
@@ -212,21 +313,24 @@ async def _handle_status_check(
     user_message: str,
     lookup_params: Dict[str, Any],
 ) -> tuple[str, Dict[str, Any]]:
-    envelope_id = str(
-        lookup_params.get("envelope_id")
-        or session.selections.get("envelope_id")
-        or _extract_envelope_id(user_message)
-    ).strip()
+    envelope_id = _resolve_envelope_id_for_status_check(
+        lookup_params,
+        session,
+        user_message,
+    )
     if not envelope_id:
+        session.selections["pending_envelope_status_check"] = True
         return "Please share the envelope ID so I can check your filing status.", {}
     state_code = str(session.selections.get("state_code") or "").strip().lower()
     if not state_code:
+        session.selections["pending_envelope_status_check"] = True
         return (
             "I need the filing state to check envelope status. "
             "Please share the state code as well.",
             {},
         )
 
+    session.selections.pop("pending_envelope_status_check", None)
     await ctx.notify("checking_envelope_status")
     fields = (
         "submitter(full_name,submitter_uslp_id),submitted_on,envelope_fees,status,"
@@ -573,6 +677,20 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             restore_from_system_messages(rows, session)
 
         content = state.get("user_message") or ""
+        if not is_english_text(content):
+            return {
+                **state,
+                "phase": session.phase.value,
+                "user_id": user_id,
+                "user_message": "",
+                "skip_user_persist": True,
+                "result": result_from_session(
+                    session,
+                    ENGLISH_ONLY_REJECTION_MESSAGE,
+                    metadata={"language_rejected": True},
+                ),
+                "next_node": "persist",
+            }
         await ctx.conversation_repo.insert_user_message(cid, content)
         history = await load_history(ctx.conversation_repo, cid, session=session)
 
@@ -610,6 +728,38 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "phase": session.phase.value,
                 "analysis_results": analysis_results,
                 "next_node": "analyze_and_prefill",
+            }
+
+        rejected = [r for r in analysis_results if r.get("rejected_non_court")]
+        successful_preview = [r for r in analysis_results if r.get("ok") and r.get("analysis")]
+        if rejected and not successful_preview:
+            from app.services.court_document_validator import (
+                NON_COURT_DOCUMENT_REJECTION_MESSAGE,
+            )
+
+            result = result_from_session(
+                session,
+                NON_COURT_DOCUMENT_REJECTION_MESSAGE,
+                event_kind="assistant.message",
+                metadata={
+                    "files": [
+                        {
+                            "file_name": item.get("file_name"),
+                            "ok": False,
+                            "error": item.get("error"),
+                            "rejected_non_court": True,
+                        }
+                        for item in analysis_results
+                    ],
+                    "document_rejected": True,
+                },
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
             }
 
         session.mode = FilingMode.FILING_EXISTING
@@ -728,10 +878,22 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         if is_session_start:
             matched_locally = True
 
+        if session.selections.get("pending_envelope_status_check") and user_message.strip():
+            typed = user_message.strip()
+            if typed != GREETING_USER_MESSAGE:
+                matched_locally = True
+                llm_out = {
+                    "lookup_action": "check_status",
+                    "lookup_params": {
+                        "envelope_id": _extract_envelope_id(typed),
+                    },
+                }
+
         if (
             session.mode == FilingMode.FILING_EXISTING
             and user_message.strip()
             and user_message != GREETING_USER_MESSAGE
+            and not matched_locally
         ):
             typed = user_message.strip()
             if session.phase == FilingPhase.EXISTING_ENTER_CASE_NUMBER:
@@ -784,10 +946,14 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             )
 
             intent = str(llm_out.get("intent") or "continue")
-            if session.mode == FilingMode.UNSET or intent in (
-                "filing_new",
-                "filing_existing",
-                "generic_legal",
+            lookup_action_from_llm = str(llm_out.get("lookup_action") or "")
+            if lookup_action_from_llm != "check_status" and (
+                session.mode == FilingMode.UNSET
+                or intent in (
+                    "filing_new",
+                    "filing_existing",
+                    "generic_legal",
+                )
             ):
                 advance_mode_from_intent(session, intent)
             await capture_new_case_topic(
@@ -910,6 +1076,10 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                             "filing_party_id": filing_party_id,
                         }
                     )
+                    # Cache the whole detail response (codes, parties, links)
+                    # so the filing-code and document-type steps can follow
+                    # its links without calling the case API again.
+                    cache_existing_case_details(session, case_detail)
                     apply_existing_search_attrs(session, search_item, case_detail)
                     session.phase = FilingPhase.EXISTING_CASE_CONFIRM
                     await ctx.notify("existing_case_confirm")
@@ -965,7 +1135,10 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         elif lookup_action == "case_number":
             await ctx.notify("searching_existing_case")
         elif lookup_action == "confirm_case":
-            await ctx.notify("loading_document_types")
+            if session.selections.get("filing_codes_url"):
+                await ctx.notify("loading_filing_codes")
+            else:
+                await ctx.notify("loading_document_types")
         await handle_lookup(
             ctx.filing_repo,
             session,
@@ -1017,8 +1190,16 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "[generic_legal] court_rules RAG failed; keeping nav agent reply"
                 )
 
+        entering_intent_pending = (
+            session.phase == FilingPhase.INTENT_PENDING
+            and session.selections.get("state_code")
+            and phase_at_turn_start in (
+                FilingPhase.SELECTING_STATE,
+                FilingPhase.GREETING,
+            )
+        )
         if session.phase != phase_at_turn_start and not used_court_rules_rag:
-            if session.phase == FilingPhase.INTENT_PENDING:
+            if session.phase == FilingPhase.INTENT_PENDING or entering_intent_pending:
                 await ctx.notify("loading_courts")
                 await prefetch_court_catalog(ctx.filing_repo, session)
                 assistant_message = POST_STATE_HELP_MESSAGE
@@ -1271,6 +1452,15 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         await ctx.notify("collecting_workflow_answers")
         history = history_for_llm(session, state.get("history") or [])
         user_message = state.get("user_message") or ""
+        entered_from_offer = session.phase in (
+            FilingPhase.OFFERING_DOCUMENTS,
+            FilingPhase.AWAITING_DOCUMENT_UPLOAD,
+        )
+        offer_phase = session.phase
+        correction_fields = apply_chat_detail_corrections(session, user_message)
+        if correction_fields:
+            session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+            sync_checklist_from_answers(session)
 
         next_q = next_pending_question(session)
         from_template = bool(session.selections.get("template_questions_ready"))
@@ -1340,11 +1530,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 ],
             )
 
-        for key, val in session.collected_answers.items():
-            for item in session.checklist.items:
-                if item.field_name == key and item.status != "skipped":
-                    item.status = "answered"
-                    item.value = val
+        sync_checklist_from_answers(session)
 
         leftover = next_pending_question(session)
         if from_template:
@@ -1353,6 +1539,30 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             complete = bool(llm_out.get("workflow_complete")) or workflow_is_complete(
                 session
             )
+        if complete and entered_from_offer:
+            session.phase = offer_phase
+            note = correction_summary(correction_fields, session)
+            assistant_message = (
+                (note + " You can upload documents or say that is all to continue.")
+                if note
+                else "I updated your details. You can upload documents or say that is all to continue."
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            result = OrchestratorResult(
+                assistant_message=assistant_message,
+                conversation_id=session.conversation_id,
+                phase=session.phase,
+                mode=session.mode,
+                selections=session.selections,
+                collected_answers=session.collected_answers,
+                checklist=session.checklist.to_payload(),
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
         if complete:
             session.phase = FilingPhase.GENERATING_DOCUMENTS
             await persist_system_state(ctx.conversation_repo, session)
@@ -1363,6 +1573,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             }
 
         assistant_message = str(llm_out.get("assistant_message") or "").strip()
+        note = correction_summary(correction_fields, session)
+        if note and note.lower() not in assistant_message.lower():
+            assistant_message = f"{note} {assistant_message}".strip()
         if not assistant_message and leftover:
             assistant_message = str(
                 leftover.get("field_label")
@@ -1402,6 +1615,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             return {**state, "result": result}
 
         if session:
+            sync_checklist_from_answers(session)
+            if session.checklist.items:
+                result.checklist = session.checklist.to_payload()
             append_chat_turn(
                 session,
                 state.get("user_message") or "",

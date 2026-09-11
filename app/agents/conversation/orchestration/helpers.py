@@ -72,6 +72,7 @@ async def load_history(
 async def persist_system_state(
     conversation_repo: ConversationRepository, session: FilingSession
 ) -> None:
+    sync_checklist_from_answers(session)
     snapshot = {
         "phase": session.phase.value,
         "mode": session.mode.value,
@@ -370,6 +371,12 @@ async def apply_catalog_shortcuts(
                 ]
             if chosen.get("filing_codes_url"):
                 session.selections["filing_codes_url"] = chosen["filing_codes_url"]
+            if chosen.get("filer_type_codes_url"):
+                session.selections["filer_type_codes_url"] = chosen[
+                    "filer_type_codes_url"
+                ]
+            if chosen.get("filing_type_url"):
+                session.selections["filing_type_url"] = chosen["filing_type_url"]
             advance_phase_after_selections(session)
             continue
         return
@@ -454,14 +461,32 @@ async def load_db_options(
                 selections.get("case_type_code"),
             )
         return []
+    if phase == FilingPhase.SELECTING_FILER_TYPE:
+        url = selections.get("filer_type_codes_url")
+        if codes_service and url:
+            return await codes_service.fetch_by_url(str(url))
+        return []
     if phase == FilingPhase.SELECTING_FILING_CODE:
         url = selections.get("filing_codes_url")
+        if codes_service and url:
+            return await codes_service.fetch_by_url(str(url))
+        return []
+    if phase == FilingPhase.SELECTING_DOC_TYPE_CODE:
+        # ``document_type_codes`` is returned on the selected filing-code item.
+        url = selections.get("document_type_codes_url")
         if codes_service and url:
             return await codes_service.fetch_by_url(str(url))
         return []
     if phase == FilingPhase.SELECTING_DOCUMENT_TYPE:
         templates = await filing_repo.list_active_document_templates()
         return match_document_templates(templates, selections)
+    if phase == FilingPhase.SELECTING_FILING_TYPE:
+        url = selections.get("filing_type_url")
+        if codes_service and url:
+            # filing_type endpoint returns ``{"item": {"EFile": "EFile"}}``,
+            # which the standard normalize path cannot read.
+            return await codes_service.fetch_filing_type_by_url(str(url))
+        return []
     if phase == FilingPhase.EXISTING_CASE_CONFIRM:
         case = selections.get("case_metadata")
         return [case] if case else []
@@ -480,8 +505,11 @@ _PHASE_CACHE_KEYS = {
     FilingPhase.SELECTING_CASE_CATEGORY: "cached_case_categories",
     FilingPhase.SELECTING_CASE_TYPE: "cached_case_types",
     FilingPhase.SELECTING_CASE_PARTIES: "cached_party_types",
+    FilingPhase.SELECTING_FILER_TYPE: "cached_filer_types",
     FilingPhase.SELECTING_FILING_CODE: "cached_filing_codes",
+    FilingPhase.SELECTING_DOC_TYPE_CODE: "cached_doc_type_codes",
     FilingPhase.SELECTING_DOCUMENT_TYPE: "cached_document_types",
+    FilingPhase.SELECTING_FILING_TYPE: "cached_filing_types",
 }
 
 
@@ -506,6 +534,12 @@ def compact_cached_options(options: List[Dict[str, Any]]) -> List[Dict[str, Any]
             item["document_type_codes_url"] = str(
                 row.get("document_type_codes_url")
             ).strip()
+        if row.get("filer_type_codes_url"):
+            item["filer_type_codes_url"] = str(
+                row.get("filer_type_codes_url")
+            ).strip()
+        if row.get("filing_type_url"):
+            item["filing_type_url"] = str(row.get("filing_type_url")).strip()
         if code or name:
             rows.append(item)
     return rows
@@ -554,20 +588,118 @@ async def options_for_response(
 ) -> List[Dict[str, Any]]:
     if override is not None:
         return override
-    return await load_db_options(
-        filing_repo,
-        session.phase,
-        session.selections,
-        codes_service=codes_service,
-        mode=session.mode,
-        bedrock=bedrock,
-    )
+    # Auto-skip 1-option phases (filer_type, filing_type). Loop a few times
+    # in case a chain of single-option phases collapses (e.g. filer_type has
+    # a single Attorney entry AND filing_type is just EFile).
+    for _ in range(4):
+        phase = session.phase
+        options = await load_db_options(
+            filing_repo,
+            phase,
+            session.selections,
+            codes_service=codes_service,
+            mode=session.mode,
+            bedrock=bedrock,
+        )
+        if phase in (
+            FilingPhase.SELECTING_FILER_TYPE,
+            FilingPhase.SELECTING_FILING_TYPE,
+        ) and auto_pick_single_option(session, phase, options):
+            continue
+        return options
+    return []
 
 
 def merge_selections(session: FilingSession, update: Dict[str, Any]) -> None:
     for key, value in (update or {}).items():
         if value is not None and value != "":
             session.selections[key] = value
+
+
+# Every link the case-detail response exposes. Each one is cached as
+# ``<key>_url`` so a later phase can call it without re-fetching the case.
+CASE_DETAIL_LINK_KEYS: tuple[str, ...] = (
+    "filing_codes",
+    "filer_type_codes",
+    "filing_type",
+    "party_type_codes",
+    "case_subtype_codes",
+    "name_suffix_codes",
+    "disclaimer_requirement_codes",
+    "location_code",
+    "countries",
+    "states",
+    "case_service_contacts",
+)
+
+
+def _case_detail_link_url(links: Any, key: str) -> str:
+    """Read ``link.<key>.link`` from a case-detail response."""
+    if not isinstance(links, dict):
+        return ""
+    entry = links.get(key)
+    if isinstance(entry, dict):
+        return str(entry.get("link") or entry.get("href") or "").strip()
+    if isinstance(entry, str):
+        return entry.strip()
+    return ""
+
+
+def cache_existing_case_details(
+    session: FilingSession,
+    case_detail: Dict[str, Any],
+) -> None:
+    """Cache the case-detail response so later phases never re-fetch the case.
+
+    Stores the case identity (tracking id, jurisdiction/category/type codes),
+    the parties (``id`` values feed ``filing_party_id``) and every code link
+    the response returned. ``filing_codes_url``, ``filer_type_codes_url`` and
+    ``filing_type_url`` reuse the same selection keys as the new-case flow, so
+    the existing dropdown phases can call them unchanged.
+    """
+    detail = dict(case_detail or {})
+    if not detail:
+        return
+    sel = session.selections
+
+    for source_key, target_key in (
+        ("case_tracking_id", "case_tracking_id"),
+        ("case_number", "case_number"),
+        ("case_title", "case_title"),
+        ("jurisdiction", "jurisdiction_code"),
+        ("case_category", "case_category_code"),
+        ("case_type", "case_type_code"),
+    ):
+        value = str(detail.get(source_key) or "").strip()
+        if value:
+            sel[target_key] = value
+
+    parties = [
+        dict(row)
+        for row in (detail.get("case_parties") or [])
+        if isinstance(row, dict)
+    ]
+    if parties:
+        sel["existing_case_parties"] = parties
+        # ``filing_party_id`` must be a party ``id``, never a party type code.
+        current = str(sel.get("filing_party_id") or "").strip()
+        valid_ids = {str(p.get("id") or "").strip() for p in parties}
+        valid_ids.discard("")
+        if current not in valid_ids:
+            first_id = str(parties[0].get("id") or "").strip()
+            if first_id:
+                sel["filing_party_id"] = first_id
+
+    links = detail.get("link")
+    cached_links: Dict[str, str] = {}
+    for key in CASE_DETAIL_LINK_KEYS:
+        url = _case_detail_link_url(links, key)
+        if not url:
+            continue
+        cached_links[key] = url
+        sel[f"{key}_url"] = url
+    if cached_links:
+        sel["case_detail_links"] = cached_links
 
 
 def apply_existing_search_attrs(
@@ -623,6 +755,37 @@ def advance_mode_from_intent(session: FilingSession, intent: str) -> None:
             session.phase = FilingPhase.EXISTING_SELECTING_STATE
 
 
+def _phase_after_document_type_ready(sel: Dict[str, Any]) -> "FilingPhase":
+    """After document_type is ready, ask for filer_type / filing_type if the
+    case-type item exposed those API links. If neither URL is present (or the
+    selection was already made) proceed to OFFERING_DOCUMENTS."""
+    if sel.get("filer_type_codes_url") and not sel.get("filer_type"):
+        return FilingPhase.SELECTING_FILER_TYPE
+    if sel.get("filing_type_url") and not sel.get("filing_type"):
+        return FilingPhase.SELECTING_FILING_TYPE
+    return FilingPhase.OFFERING_DOCUMENTS
+
+
+def _phase_after_filer_type(sel: Dict[str, Any]) -> "FilingPhase":
+    if sel.get("filing_type_url") and not sel.get("filing_type"):
+        return FilingPhase.SELECTING_FILING_TYPE
+    return FilingPhase.OFFERING_DOCUMENTS
+
+
+def _phase_after_case_confirm(sel: Dict[str, Any]) -> "FilingPhase":
+    """Existing case: pick the court filing code, then its document type.
+
+    Both lists come from links cached off the case-detail response. When the
+    court did not return them, fall back to the document-template step so the
+    flow still reaches document generation.
+    """
+    if sel.get("filing_codes_url") and not sel.get("filing_code"):
+        return FilingPhase.SELECTING_FILING_CODE
+    if sel.get("document_type_codes_url") and not sel.get("doc_type_code"):
+        return FilingPhase.SELECTING_DOC_TYPE_CODE
+    return FilingPhase.SELECTING_DOCUMENT_TYPE
+
+
 def advance_phase_after_selections(session: FilingSession) -> None:
     sel = session.selections
     if session.phase == FilingPhase.SELECTING_STATE and sel.get("state_code"):
@@ -646,11 +809,32 @@ def advance_phase_after_selections(session: FilingSession) -> None:
         ):
             sel["case_type"] = sel.get("case_type_name") or sel.get("case_type_code") or ""
             sel.setdefault("sub_case_type", "")
-            session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
-        elif session.phase == FilingPhase.SELECTING_FILING_CODE:
+            # Enter SELECTING_FILING_CODE when the case type exposed a
+            # filing_codes link (the normal Tyler flow). Fall back to the
+            # document-type phase when no live filing-code list is available.
+            if sel.get("filing_codes_url"):
+                session.phase = FilingPhase.SELECTING_FILING_CODE
+            else:
+                session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        elif session.phase == FilingPhase.SELECTING_FILING_CODE and (
+            sel.get("filing_code") or sel.get("filing_code_code")
+        ):
+            # Normalize to the bare ``filing_code`` scalar the payload
+            # assembler expects. ``filter_selections_update`` now writes
+            # both keys, but older sessions may only carry ``filing_code_code``.
+            if not sel.get("filing_code") and sel.get("filing_code_code"):
+                sel["filing_code"] = sel["filing_code_code"]
             session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
+        ):
+            session.phase = _phase_after_document_type_ready(sel)
+        elif session.phase == FilingPhase.SELECTING_FILER_TYPE and sel.get(
+            "filer_type"
+        ):
+            session.phase = _phase_after_filer_type(sel)
+        elif session.phase == FilingPhase.SELECTING_FILING_TYPE and sel.get(
+            "filing_type"
         ):
             session.phase = FilingPhase.OFFERING_DOCUMENTS
         elif session.phase == FilingPhase.SELECTING_COUNTY and sel.get("county_name"):
@@ -666,10 +850,60 @@ def advance_phase_after_selections(session: FilingSession) -> None:
             and sel.get("jurisdiction_code")
         ):
             session.phase = FilingPhase.EXISTING_ENTER_CASE_NUMBER
+        elif session.phase == FilingPhase.SELECTING_FILING_CODE and sel.get(
+            "filing_code"
+        ):
+            # The chosen filing code carries its own document_type_codes link.
+            if sel.get("document_type_codes_url") and not sel.get("doc_type_code"):
+                session.phase = FilingPhase.SELECTING_DOC_TYPE_CODE
+            else:
+                session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        elif session.phase == FilingPhase.SELECTING_DOC_TYPE_CODE and sel.get(
+            "doc_type_code"
+        ):
+            session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
         elif session.phase == FilingPhase.SELECTING_DOCUMENT_TYPE and sel.get(
             "template_questions_ready"
         ):
+            session.phase = _phase_after_document_type_ready(sel)
+        elif session.phase == FilingPhase.SELECTING_FILER_TYPE and sel.get(
+            "filer_type"
+        ):
+            session.phase = _phase_after_filer_type(sel)
+        elif session.phase == FilingPhase.SELECTING_FILING_TYPE and sel.get(
+            "filing_type"
+        ):
             session.phase = FilingPhase.OFFERING_DOCUMENTS
+
+
+def auto_pick_single_option(
+    session: FilingSession, phase: FilingPhase, options: List[Dict[str, Any]]
+) -> bool:
+    """
+    Auto-select and advance when a code lookup returned exactly one option.
+
+    Returns ``True`` if the phase was auto-advanced. This is called from the
+    node that just loaded ``options`` so the user is never asked to pick from
+    a one-item dropdown (e.g. ``filing_type`` usually returns just ``EFile``).
+    """
+    if session.phase != phase or not isinstance(options, list) or len(options) != 1:
+        return False
+    row = options[0] if isinstance(options[0], dict) else {}
+    code = str(row.get("code") or "").strip()
+    if not code:
+        return False
+
+    if phase == FilingPhase.SELECTING_FILER_TYPE:
+        session.selections["filer_type"] = code
+        session.selections["filer_type_name"] = str(row.get("name") or code)
+        advance_phase_after_selections(session)
+        return True
+    if phase == FilingPhase.SELECTING_FILING_TYPE:
+        session.selections["filing_type"] = code
+        session.selections["filing_type_name"] = str(row.get("name") or code)
+        advance_phase_after_selections(session)
+        return True
+    return False
 
 
 def question_visible(question: Dict[str, Any], answers: Dict[str, Any]) -> bool:
@@ -768,6 +1002,30 @@ def next_pending_question(session: FilingSession) -> Optional[Dict[str, Any]]:
     return None
 
 
+def sync_checklist_from_answers(session: FilingSession) -> None:
+    """Keep checklist status/value aligned with answers and visibility."""
+    if not session.checklist.items:
+        return
+    answered = session.collected_answers
+    questions = {
+        str(q.get("field_name") or ""): q for q in session.workflow_questions
+    }
+    for item in session.checklist.items:
+        question = questions.get(item.field_name)
+        visible = question_visible(question, answered) if question else True
+        value = answered.get(item.field_name)
+        has_value = value not in (None, "", [], {})
+        if not visible:
+            item.status = "skipped"
+            continue
+        if has_value:
+            item.status = "answered"
+            item.value = value
+        else:
+            item.status = "pending"
+            item.value = None
+
+
 def merge_checklist_updates(
     session: FilingSession, updates: List[Dict[str, Any]]
 ) -> None:
@@ -846,7 +1104,7 @@ async def handle_lookup(
             session.selections["case_number"] = case.get("case_number")
             session.phase = FilingPhase.EXISTING_CASE_CONFIRM
     elif action == "confirm_case":
-        session.phase = FilingPhase.SELECTING_DOCUMENT_TYPE
+        session.phase = _phase_after_case_confirm(session.selections)
 
 
 def result_from_session(
@@ -857,19 +1115,11 @@ def result_from_session(
     metadata: Optional[Dict[str, Any]] = None,
     analysis: Optional[Dict[str, Any]] = None,
 ) -> OrchestratorResult:
-    checklist_phases = (
-        FilingPhase.OFFERING_DOCUMENTS,
-        FilingPhase.AWAITING_DOCUMENT_UPLOAD,
-        FilingPhase.COLLECTING_WORKFLOW_ANSWERS,
-        FilingPhase.GENERATING_DOCUMENTS,
-        FilingPhase.VERIFYING_PLATFORM_PAYMENT,
-        FilingPhase.VERIFYING_COURT_PAYMENT,
-        FilingPhase.CONFIRMING_EFILE,
-        FilingPhase.COMPLETE,
-    )
-    checklist = (
-        session.checklist.to_payload() if session.phase in checklist_phases else None
-    )
+    if session.checklist.items:
+        sync_checklist_from_answers(session)
+        checklist = session.checklist.to_payload()
+    else:
+        checklist = None
     meta = dict(metadata or {})
     if session.chat_context:
         meta.setdefault("chat_context", list(session.chat_context))
@@ -953,11 +1203,7 @@ def merge_prefilled_answers(
         for key, value in newly.items()
     ]
     merge_checklist_updates(session, updates)
-    for key, val in session.collected_answers.items():
-        for item in session.checklist.items:
-            if item.field_name == key and item.status != "skipped":
-                item.status = "answered"
-                item.value = val
+    sync_checklist_from_answers(session)
     return newly
 
 
@@ -1048,6 +1294,8 @@ async def analyze_uploads_concurrently(
                     "analysis": payload,
                 }
             except Exception as exc:  # noqa: BLE001
+                from app.services.court_document_validator import NonCourtDocumentError
+
                 logger.warning("Document analysis failed for %s: %s", file_name, exc)
                 return {
                     "ok": False,
@@ -1055,6 +1303,7 @@ async def analyze_uploads_concurrently(
                     "classification": None,
                     "error": str(exc),
                     "analysis": None,
+                    "rejected_non_court": isinstance(exc, NonCourtDocumentError),
                 }
 
     return list(await asyncio.gather(*[_one(item) for item in uploads]))

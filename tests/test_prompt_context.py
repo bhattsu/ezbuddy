@@ -18,6 +18,7 @@ def test_format_llm_prompt_injects_date_when_missing():
     prompt = format_llm_prompt("Hello {name}", name="world", on_date=date(2026, 8, 30))
     assert "August 30, 2026" in prompt
     assert "Hello world" in prompt
+    assert "English only" in prompt
 
 
 def test_format_llm_prompt_respects_existing_date_placeholder():

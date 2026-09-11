@@ -19,8 +19,11 @@ DROPDOWN_PHASES = frozenset(
         "selecting_case_category",
         "selecting_case_type",
         "selecting_case_parties",
+        "selecting_filer_type",
         "selecting_filing_code",
+        "selecting_doc_type_code",
         "selecting_document_type",
+        "selecting_filing_type",
         "existing_search_party",
         "existing_search_date",
         "verifying_court_payment",
@@ -36,8 +39,11 @@ _PHASE_NOUNS = {
     "selecting_case_category": "case category",
     "selecting_case_type": "case type",
     "selecting_case_parties": "party type",
+    "selecting_filer_type": "filer type",
     "selecting_filing_code": "filing code",
+    "selecting_doc_type_code": "court document type",
     "selecting_document_type": "document type",
+    "selecting_filing_type": "filing type",
     "existing_search_party": "party",
     "existing_search_date": "case",
     "verifying_court_payment": "payment account",
@@ -168,8 +174,11 @@ def selection_update_for_option(
         "selecting_case_category": "case_category_code",
         "selecting_case_type": "case_type_code",
         "selecting_case_parties": "party_type_code",
+        "selecting_filer_type": "filer_type",
         "selecting_filing_code": "filing_code",
+        "selecting_doc_type_code": "doc_type_code",
         "selecting_document_type": "document_type_code",
+        "selecting_filing_type": "filing_type",
         "verifying_court_payment": "court_payment_account_id",
     }
     key = keys.get(str(phase).lower())
@@ -322,8 +331,11 @@ def filter_selections_update(
         "selecting_case_category": ("case_category", "case_type_codes_url"),
         "selecting_case_type": ("case_type", "party_type_codes_url"),
         "selecting_case_parties": ("party_type", None),
+        "selecting_filer_type": ("filer_type", None),
         "selecting_filing_code": ("filing_code", "document_type_codes_url"),
+        "selecting_doc_type_code": ("doc_type", None),
         "selecting_document_type": ("document_type", None),
+        "selecting_filing_type": ("filing_type", None),
     }
     config = configs.get(phase_key)
     if not config:
@@ -331,7 +343,8 @@ def filter_selections_update(
     prefix, next_url_key = config
     match = _match(
         options,
-        update.get(f"{prefix}_code")
+        update.get(prefix)
+        or update.get(f"{prefix}_code")
         or update.get(f"{prefix}_name")
         or update.get("case_type")
         or update.get("party_role"),
@@ -354,6 +367,16 @@ def filter_selections_update(
             result["filing_codes_url"] = match["filing_codes_url"]
         if match.get("case_subtype_codes_url"):
             result["case_subtype_codes_url"] = match["case_subtype_codes_url"]
+        # New: propagate filer_type and filing_type link URLs so the new
+        # SELECTING_FILER_TYPE / SELECTING_FILING_TYPE phases can call them.
+        if match.get("filer_type_codes_url"):
+            result["filer_type_codes_url"] = match["filer_type_codes_url"]
+        if match.get("filing_type_url"):
+            result["filing_type_url"] = match["filing_type_url"]
+        if match.get("optional_service_codes_url"):
+            result["optional_service_codes_url"] = match[
+                "optional_service_codes_url"
+            ]
         if match.get("case_category_code"):
             result.setdefault("case_category_code", match["case_category_code"])
         if match.get("case_category_name"):
@@ -361,6 +384,15 @@ def filter_selections_update(
     if prefix == "party_type":
         result["case_parties"] = [{"code": code, "name": name}]
         result["parties_complete"] = True
+    # Filer-type, filing-code and filing-type selections plug the raw scalar
+    # into ``selections`` under the bare key so the live payload assembler /
+    # validator can look them up (they don't read ``<prefix>_code``).
+    if prefix == "filer_type":
+        result["filer_type"] = code
+    if prefix == "filing_code":
+        result["filing_code"] = code
+    if prefix == "filing_type":
+        result["filing_type"] = code
     if prefix == "document_type":
         result["document_type_code"] = match.get("doc_type") or code
         result["document_type_name"] = name

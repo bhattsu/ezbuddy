@@ -14,6 +14,7 @@ from app.api.endpoints import (
     court_rules,
     document_analysis,
     idp_health,
+    template_ingest,
 )
 
 all_routes = APIRouter()
@@ -59,6 +60,13 @@ all_routes.include_router(
     tags=["Court Rules Knowledge"],
 )
 
+# Court PDF template ingest (S3 + configuration.document_templates)
+all_routes.include_router(
+    template_ingest.router,
+    prefix="/api/templates",
+    tags=["Template Ingest"],
+)
+
 
 @all_routes.get("/api/health", tags=["Health"], include_in_schema=False)
 async def health_check_no_slash():
@@ -92,6 +100,11 @@ async def root():
             },
             "court_form_questions": {
                 "questions": "/api/court-form/questions",
+            },
+            "template_ingest": {
+                "states": "/api/templates/states",
+                "jurisdictions": "/api/templates/jurisdictions?state=TX",
+                "ingest": "/api/templates/ingest",
             },
         },
     }

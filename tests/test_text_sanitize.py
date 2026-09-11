@@ -12,3 +12,8 @@ def test_sanitize_removes_markdown_bold():
     text = sanitize_assistant_text("Welcome to **US Legal Pro**!")
     assert "**" not in text
     assert "US Legal Pro" in text
+
+
+def test_sanitize_replaces_non_english_output():
+    text = sanitize_assistant_text("Por favor seleccione un estado.")
+    assert text == "I can only reply in English. Please continue in English."

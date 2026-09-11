@@ -26,8 +26,12 @@ class FilingPhase(str, Enum):
     SELECTING_CASE_CATEGORY = "selecting_case_category"
     SELECTING_CASE_TYPE = "selecting_case_type"
     SELECTING_CASE_PARTIES = "selecting_case_parties"
+    SELECTING_FILER_TYPE = "selecting_filer_type"
     SELECTING_FILING_CODE = "selecting_filing_code"
+    # Tyler document_type_codes for the selected filing code (existing case).
+    SELECTING_DOC_TYPE_CODE = "selecting_doc_type_code"
     SELECTING_DOCUMENT_TYPE = "selecting_document_type"
+    SELECTING_FILING_TYPE = "selecting_filing_type"
     OFFERING_DOCUMENTS = "offering_documents"
     AWAITING_DOCUMENT_UPLOAD = "awaiting_document_upload"
     COLLECTING_WORKFLOW_ANSWERS = "collecting_workflow_answers"
@@ -106,6 +110,7 @@ class SessionStartedPayload(BaseModel):
     history: List[Dict[str, Any]] = Field(default_factory=list)
     chat_context: List[ChatTurnModel] = Field(default_factory=list)
     selection_options: Optional[SelectionOptionsPayload] = None
+    checklist: Optional[ChecklistPayload] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Literal
 
 from app.agents.conversation.orchestration.state import FilingGraphState
+from app.agents.conversation.orchestration.detail_corrections import (
+    looks_like_detail_correction,
+)
 from app.api.schemas.filing_events import FilingPhase
 
 _OFFER_PHASES = {
@@ -24,9 +27,13 @@ def route_entry(state: FilingGraphState) -> Literal["connect", "message_prepare"
 
 def route_after_message_prepare(
     state: FilingGraphState,
-) -> Literal["offer_documents", "workflow", "verify_payment", "navigation"]:
+) -> Literal["offer_documents", "workflow", "verify_payment", "navigation", "persist"]:
+    if state.get("next_node") == "persist" or state.get("result") is not None:
+        return "persist"
     phase = state.get("phase") or ""
     if phase in _OFFER_PHASES:
+        if looks_like_detail_correction(state.get("user_message") or ""):
+            return "workflow"
         return "offer_documents"
     if phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS.value:
         return "workflow"

@@ -384,3 +384,84 @@ list_package_imports: |
   FROM configuration.package_imports pi
   ORDER BY pi.imported_at DESC NULLS LAST
   LIMIT $1
+fetch_template_id_by_code: |
+  SELECT
+      dt.id AS template_id,
+      dt.code,
+      dt.name
+  FROM configuration.document_templates dt
+  WHERE dt.code = $1
+  LIMIT 1
+insert_document_template: |
+  INSERT INTO configuration.document_templates (
+      id,
+      code,
+      name,
+      description,
+      is_active,
+      doc_type,
+      state,
+      jurisdiction,
+      case_category,
+      case_type,
+      case_subtype,
+      field_mapping,
+      sample_input
+  )
+  VALUES (
+      $1::uuid,
+      $2,
+      $3,
+      $4,
+      TRUE,
+      $5,
+      $6,
+      $7,
+      $8,
+      $9,
+      $10,
+      $11,
+      $12
+  )
+  RETURNING
+      id,
+      code,
+      name,
+      description,
+      is_active,
+      created_at,
+      doc_type,
+      state,
+      jurisdiction,
+      case_category,
+      case_type,
+      case_subtype,
+      field_mapping,
+      sample_input
+insert_template_version: |
+  INSERT INTO configuration.template_versions (
+      id,
+      template_id,
+      version,
+      s3_bucket,
+      s3_key,
+      effective_from,
+      effective_to
+  )
+  VALUES (
+      $1::uuid,
+      $2::uuid,
+      $3::int,
+      $4,
+      $5,
+      $6::date,
+      $7::date
+  )
+  RETURNING
+      id,
+      template_id,
+      version,
+      s3_bucket,
+      s3_key,
+      effective_from,
+      effective_to

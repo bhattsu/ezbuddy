@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict
 
+from app.agents.utils.language_policy import ENGLISH_ONLY_PROMPT_BLOCK
+
 CURRENT_DATE_BLOCK = """## Today's date
 Today is {current_date_long} ({current_date}). Use this as the reference when interpreting or validating dates."""
 
@@ -32,4 +34,6 @@ def format_llm_prompt(
     text = template
     if "{current_date" not in text:
         text = CURRENT_DATE_BLOCK.format(**ctx) + "\n\n" + text
+    if "## Language" not in text:
+        text = ENGLISH_ONLY_PROMPT_BLOCK + "\n\n" + text
     return text.format(**{**ctx, **kwargs})

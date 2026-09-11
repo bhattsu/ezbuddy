@@ -21,6 +21,7 @@ from app.api.schemas.document import (
 from app.api.schemas.legal_filing import DocumentAnalysisResponse
 from app.config.settings import settings
 from app.core.prompts.context import format_llm_prompt
+from app.services.court_document_validator import validate_court_document
 from app.services.extraction_service import ExtractionService
 from app.services.llm_service import LLMService
 
@@ -322,6 +323,14 @@ class DocumentAnalysisService:
             if not isinstance(extracted_fields, dict):
                 extracted_fields = {}
 
+            validate_court_document(
+                extracted_fields=extracted_fields,
+                user_details=user_details,
+                classification=vlm_result.get("document_classification"),
+                case_type=vlm_result.get("case_type"),
+                sub_case_type=vlm_result.get("sub_case_type"),
+            )
+
             return DocumentAnalysisResponse(
                 document_id=document_id,
                 file_name=file_name,
@@ -362,6 +371,8 @@ class DocumentAnalysisService:
         )
 
         raw_kv = self._textract_key_values(extraction)
+        extracted_text = self._extraction_text_blob(extraction)
+        validate_court_document(text=extracted_text, form_kv=raw_kv)
         llm_result = await self._llm_format_analysis(file_name, extraction)
 
         user_details = llm_result.get("user_details") or {}

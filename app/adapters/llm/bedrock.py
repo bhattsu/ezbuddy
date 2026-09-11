@@ -130,7 +130,7 @@ class Bedrock:
         self.llm = ChatBedrock(
             model_id=self.llm_model_id,
             client=self.bedrock_client,
-            temperature=0.7,
+            temperature=0,
             provider='anthropic',
             max_tokens=8192
         )

@@ -68,6 +68,7 @@ def build_filing_graph(ctx: FilingOrchestratorContext):
             "workflow": "workflow",
             "verify_payment": "verify_payment",
             "navigation": "navigation",
+            "persist": "persist",
         },
     )
 

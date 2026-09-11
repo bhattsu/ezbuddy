@@ -15,7 +15,10 @@ from app.agents.utils.db_options_format import (
 from app.agents.utils.json_utils import parse_llm_json
 from app.agents.utils.text_sanitize import sanitize_assistant_text
 from app.core.prompts.context import format_llm_prompt
-from app.core.prompts.filing_assistant import FILING_ASSISTANT_PROMPT
+from app.core.prompts.filing_assistant import (
+    FILING_ASSISTANT_PROMPT,
+    POST_STATE_HELP_MESSAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +58,8 @@ class FilingAssistantAgent:
     ) -> Dict[str, Any]:
         if not parsed.get("assistant_message") and bedrock is not None and raw is not None:
             text = bedrock.extract_text_field(raw, "assistant_message", "text", "content")
-            parsed["assistant_message"] = text or (
-                "Welcome to US Legal Pro. I can help you file a new case, "
-                "continue an existing case, or answer brief legal questions. How may I assist you?"
-            )
-        parsed.setdefault(
-            "assistant_message",
-            "Welcome to US Legal Pro. I can help you file a new case, "
-            "continue an existing case, or answer brief legal questions. How may I assist you?",
-        )
+            parsed["assistant_message"] = text or POST_STATE_HELP_MESSAGE
+        parsed.setdefault("assistant_message", POST_STATE_HELP_MESSAGE)
         parsed.setdefault("intent", "continue")
         parsed.setdefault("selections_update", {})
         parsed.setdefault("lookup_action", None)

@@ -2,6 +2,7 @@ import asyncio
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from io import BytesIO
 import logging
 
 from app.adapters.aws_clients import aws_clients
@@ -88,6 +89,40 @@ class S3Manager:
             logger.error("Failed to upload to S3 key %s: %s", s3_key, e)
             raise RuntimeError(f"S3 upload failed: {e}") from e
 
+    async def upload_bytes_at_key(
+        self,
+        data: bytes,
+        s3_key: str,
+        *,
+        bucket: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> str:
+        """Upload in-memory bytes to an explicit S3 key; return the key."""
+        target_bucket = bucket or self.bucket_name
+        if not target_bucket:
+            raise RuntimeError("BUCKET_NAME is not configured for S3 upload")
+        extra: dict = {"ServerSideEncryption": "AES256"}
+        if content_type:
+            extra["ContentType"] = content_type
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _put() -> None:
+                self.s3_client.upload_fileobj(
+                    BytesIO(data),
+                    target_bucket,
+                    s3_key,
+                    ExtraArgs=extra,
+                )
+
+            await loop.run_in_executor(None, _put)
+            logger.info("Uploaded %d bytes to s3://%s/%s", len(data), target_bucket, s3_key)
+            return s3_key
+        except Exception as e:
+            logger.error("Failed to upload bytes to S3 key %s: %s", s3_key, e)
+            raise RuntimeError(f"S3 upload failed: {e}") from e
+
     async def download_bytes(self, s3_key: str, bucket: Optional[str] = None) -> bytes:
         """Download an S3 object into memory and return raw bytes."""
         target_bucket = bucket or self.bucket_name
@@ -116,15 +151,15 @@ class S3Manager:
             logger.error("Failed to download bytes from S3: %s", e)
             raise RuntimeError(f"S3 download failed: {e}") from e
     
-    async def delete_file(self, s3_key: str):
+    async def delete_file(self, s3_key: str, bucket: Optional[str] = None):
         """Delete file from S3 asynchronously"""
-        
+        target_bucket = bucket or self.bucket_name
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
                 lambda: self.s3_client.delete_object(
-                    Bucket=self.bucket_name,
+                    Bucket=target_bucket,
                     Key=s3_key
                 )
             )
@@ -260,3 +295,62 @@ class S3Manager:
         except Exception as e:
             logger.error("Failed to list S3 objects under %s: %s", prefix, e)
             raise RuntimeError(f"S3 list failed: {e}") from e
+
+    async def list_common_prefixes(
+        self,
+        prefix: str,
+        *,
+        bucket: Optional[str] = None,
+    ) -> list[str]:
+        """List immediate child folder names under ``prefix`` (Delimiter=/)."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.list_common_prefixes_sync(prefix, bucket=bucket),
+        )
+
+    def list_common_prefixes_sync(
+        self,
+        prefix: str,
+        *,
+        bucket: Optional[str] = None,
+    ) -> list[str]:
+        """Synchronous folder listing for OpenAPI dropdowns."""
+        target_bucket = bucket or self.bucket_name
+        if not target_bucket:
+            raise RuntimeError("BUCKET_NAME is not configured for S3 list")
+
+        normalized = prefix.strip("/")
+        if normalized:
+            normalized = f"{normalized}/"
+
+        try:
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            names: list[str] = []
+            seen: set[str] = set()
+            for page in paginator.paginate(
+                Bucket=target_bucket,
+                Prefix=normalized,
+                Delimiter="/",
+            ):
+                for entry in page.get("CommonPrefixes") or []:
+                    raw = str((entry or {}).get("Prefix") or "")
+                    name = folder_name_from_prefix(raw, normalized)
+                    if name and name not in seen:
+                        seen.add(name)
+                        names.append(name)
+            return names
+        except Exception as e:
+            logger.error("Failed to list S3 prefixes under %s: %s", prefix, e)
+            raise RuntimeError(f"S3 list failed: {e}") from e
+
+
+def folder_name_from_prefix(common_prefix: str, parent_prefix: str) -> str:
+    """Turn ``documents-repo/templates/TX/`` into ``TX`` given parent ``documents-repo/templates/``."""
+    parent = parent_prefix.strip("/")
+    if parent:
+        parent = f"{parent}/"
+    value = str(common_prefix or "").strip()
+    if parent and value.startswith(parent):
+        value = value[len(parent) :]
+    return value.strip("/").split("/")[0].strip() if value.strip("/") else ""

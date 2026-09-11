@@ -22,6 +22,7 @@ Return JSON only:
 
 Rules:
 - Understand plain English, slang, and incomplete sentences.
+- The user message is English only. Extract the topic in English.
 - Ignore filler words like "I need", "help me", "file a case for".
 - If the user only states intent to file a new case without a case type, set case_topic to "".
 - search_phrases must be useful for matching official court catalog case type names.

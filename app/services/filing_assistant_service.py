@@ -86,6 +86,7 @@ class FilingAssistantService:
                 mode=result.mode,
                 chat_context=self._chat_context(result),
                 selection_options=self._selection_options(result.metadata),
+                checklist=result.checklist,
                 metadata=result.metadata,
             )
             return server_event("session.started", cid, payload)
