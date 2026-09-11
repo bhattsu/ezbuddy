@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from app.agents.conversation.orchestration.context import FilingOrchestratorContext
@@ -91,7 +92,7 @@ from app.services.process_notifications import loading_process_for_phase
 logger = logging.getLogger(__name__)
 
 NodeFn = Callable[[FilingGraphState], Any]
-_ENVELOPE_ID_RE = re.compile(r"\b[A-Za-z0-9_-]{3,64}\b")
+_ENVELOPE_ID_NUMERIC_RE = re.compile(r"\b(\d{4,64})\b")
 
 
 def _session_snapshot(session: FilingSession) -> Dict[str, str]:
@@ -184,38 +185,125 @@ def _format_existing_case_confirmation(
     )
 
 
+def _is_valid_envelope_id(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(_ENVELOPE_ID_NUMERIC_RE.fullmatch(text))
+
+
 def _extract_envelope_id(text: str) -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
-    numeric = re.findall(r"\b\d{4,}\b", raw)
-    if numeric:
-        return numeric[-1]
-    tokens = _ENVELOPE_ID_RE.findall(raw)
-    return tokens[-1] if tokens else ""
+    if _is_valid_envelope_id(raw):
+        return raw
+    matches = _ENVELOPE_ID_NUMERIC_RE.findall(raw)
+    return matches[-1] if matches else ""
+
+
+def _resolve_envelope_id_for_status_check(
+    lookup_params: Dict[str, Any],
+    session: FilingSession,
+    user_message: str,
+) -> str:
+    pending = bool(session.selections.get("pending_envelope_status_check"))
+    candidates = [
+        lookup_params.get("envelope_id"),
+        None if pending else session.selections.get("envelope_id"),
+        _extract_envelope_id(user_message),
+    ]
+    if pending:
+        typed = str(user_message or "").strip()
+        if typed and typed != GREETING_USER_MESSAGE:
+            candidates.append(typed)
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if _is_valid_envelope_id(text):
+            return text
+    return ""
+
+
+def _format_envelope_submitted_on(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace(".0Z", "Z") if text.endswith(".0Z") else text
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+        try:
+            dt = datetime.strptime(normalized, fmt)
+            return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+        except ValueError:
+            continue
+    return text
+
+
+def _summarize_filing_status(
+    row: Dict[str, Any],
+    *,
+    envelope_status: str,
+) -> str:
+    file_name = str(row.get("file_name") or "document").strip()
+    filing_status = str(row.get("status") or envelope_status or "unknown").strip()
+    reviewer_comment = str(row.get("reviewer_comment") or "").strip()
+    status_reason = str(row.get("status_reason") or "").strip()
+
+    summary = f"{file_name} has status '{filing_status}'"
+    court_notes: List[str] = []
+    if reviewer_comment:
+        court_notes.append(f"reviewer comment: {reviewer_comment}")
+    if status_reason:
+        court_notes.append(f"status reason: {status_reason}")
+    if court_notes:
+        summary += f" ({'; '.join(court_notes)})"
+    else:
+        summary += " (the court has not provided a reviewer comment or status reason yet)"
+    return summary
 
 
 def _envelope_status_message(item: Dict[str, Any], envelope_id: str) -> str:
     status = str(item.get("status") or item.get("envelope_status") or "unknown").strip()
-    submitted_on = str(item.get("submitted_on") or "").strip()
+    submitter = item.get("submitter")
+    submitter_name = ""
+    if isinstance(submitter, dict):
+        submitter_name = str(submitter.get("full_name") or "").strip()
+    submitted_on = _format_envelope_submitted_on(str(item.get("submitted_on") or ""))
     case_number = str(item.get("case_number") or "").strip()
-    reason = str(item.get("status_reason") or item.get("reviewer_comment") or "").strip()
-    parts = [f"The filing envelope {envelope_id} is currently {status}."]
+    client_matter = str(item.get("client_matter_number") or "").strip()
+    case_tracking_id = str(item.get("case_tracking_id") or "").strip()
+    envelope_fees = item.get("envelope_fees")
+
+    parts = [f"Your filing envelope {envelope_id} has status '{status}'."]
+    if submitter_name:
+        parts.append(f"It was filed by {submitter_name}.")
     if submitted_on:
         parts.append(f"It was submitted on {submitted_on}.")
-    if case_number:
-        parts.append(f"Case number: {case_number}.")
+    if client_matter:
+        parts.append(f"Client matter number: {client_matter}.")
+
     filings = item.get("filings")
     if isinstance(filings, list) and filings:
-        filing_states = [
-            str(row.get("status") or "").strip()
-            for row in filings
-            if isinstance(row, dict) and str(row.get("status") or "").strip()
-        ]
-        if filing_states:
-            parts.append("Document statuses: " + ", ".join(filing_states) + ".")
-    if reason:
-        parts.append(f"Court note: {reason}.")
+        filing_lines: List[str] = []
+        for row in filings:
+            if not isinstance(row, dict):
+                continue
+            filing_lines.append(
+                _summarize_filing_status(row, envelope_status=status)
+            )
+        if filing_lines:
+            parts.append(
+                "Document status: " + "; ".join(filing_lines) + "."
+            )
+
+    if case_number:
+        parts.append(f"Case number: {case_number}.")
+    elif not case_number:
+        parts.append("A case number has not been assigned yet.")
+
+    if case_tracking_id:
+        parts.append(f"Case tracking ID: {case_tracking_id}.")
+
+    if envelope_fees not in (None, "", [], {}):
+        parts.append(f"Envelope fees: {envelope_fees}.")
+
     return " ".join(parts)
 
 
@@ -225,21 +313,24 @@ async def _handle_status_check(
     user_message: str,
     lookup_params: Dict[str, Any],
 ) -> tuple[str, Dict[str, Any]]:
-    envelope_id = str(
-        lookup_params.get("envelope_id")
-        or session.selections.get("envelope_id")
-        or _extract_envelope_id(user_message)
-    ).strip()
+    envelope_id = _resolve_envelope_id_for_status_check(
+        lookup_params,
+        session,
+        user_message,
+    )
     if not envelope_id:
+        session.selections["pending_envelope_status_check"] = True
         return "Please share the envelope ID so I can check your filing status.", {}
     state_code = str(session.selections.get("state_code") or "").strip().lower()
     if not state_code:
+        session.selections["pending_envelope_status_check"] = True
         return (
             "I need the filing state to check envelope status. "
             "Please share the state code as well.",
             {},
         )
 
+    session.selections.pop("pending_envelope_status_check", None)
     await ctx.notify("checking_envelope_status")
     fields = (
         "submitter(full_name,submitter_uslp_id),submitted_on,envelope_fees,status,"
@@ -787,10 +878,22 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         if is_session_start:
             matched_locally = True
 
+        if session.selections.get("pending_envelope_status_check") and user_message.strip():
+            typed = user_message.strip()
+            if typed != GREETING_USER_MESSAGE:
+                matched_locally = True
+                llm_out = {
+                    "lookup_action": "check_status",
+                    "lookup_params": {
+                        "envelope_id": _extract_envelope_id(typed),
+                    },
+                }
+
         if (
             session.mode == FilingMode.FILING_EXISTING
             and user_message.strip()
             and user_message != GREETING_USER_MESSAGE
+            and not matched_locally
         ):
             typed = user_message.strip()
             if session.phase == FilingPhase.EXISTING_ENTER_CASE_NUMBER:
@@ -843,10 +946,14 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             )
 
             intent = str(llm_out.get("intent") or "continue")
-            if session.mode == FilingMode.UNSET or intent in (
-                "filing_new",
-                "filing_existing",
-                "generic_legal",
+            lookup_action_from_llm = str(llm_out.get("lookup_action") or "")
+            if lookup_action_from_llm != "check_status" and (
+                session.mode == FilingMode.UNSET
+                or intent in (
+                    "filing_new",
+                    "filing_existing",
+                    "generic_legal",
+                )
             ):
                 advance_mode_from_intent(session, intent)
             await capture_new_case_topic(
@@ -1083,8 +1190,16 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     "[generic_legal] court_rules RAG failed; keeping nav agent reply"
                 )
 
+        entering_intent_pending = (
+            session.phase == FilingPhase.INTENT_PENDING
+            and session.selections.get("state_code")
+            and phase_at_turn_start in (
+                FilingPhase.SELECTING_STATE,
+                FilingPhase.GREETING,
+            )
+        )
         if session.phase != phase_at_turn_start and not used_court_rules_rag:
-            if session.phase == FilingPhase.INTENT_PENDING:
+            if session.phase == FilingPhase.INTENT_PENDING or entering_intent_pending:
                 await ctx.notify("loading_courts")
                 await prefetch_court_catalog(ctx.filing_repo, session)
                 assistant_message = POST_STATE_HELP_MESSAGE

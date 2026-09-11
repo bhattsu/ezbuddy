@@ -28,7 +28,14 @@ class FilingNavigationOutput(BaseModel):
         default="I'm here to help with your court filing. How can I assist you today?"
     )
     selections_update: Dict[str, Any] = Field(default_factory=dict)
-    lookup_action: Optional[LookupAction] = None
+    lookup_action: Optional[LookupAction] = Field(
+        default=None,
+        description=(
+            "Set to check_status when the user asks about the outcome of a prior "
+            "e-filing submission (envelope status). Do not use filing_existing for "
+            "status inquiries."
+        ),
+    )
     lookup_params: Dict[str, Any] = Field(default_factory=dict)
     phase_complete: bool = False
 
