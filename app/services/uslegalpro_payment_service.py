@@ -19,7 +19,7 @@ from app.services.uslegalpro_api_client import USLegalProApiClient
 logger = logging.getLogger(__name__)
 
 _PAYMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-SUBSCRIBE_MESSAGE = "Please subscribe to continue."
+PAYMENT_ACCOUNT_NOT_FOUND_MESSAGE = "There is no payment account found."
 PAYMENT_ID_PROMPT = "Please enter the payment ID to verify the payment."
 COURT_ACCOUNT_THANKS = "Thank you, we will use that account."
 
@@ -141,7 +141,7 @@ def format_court_payment_account(item: Dict[str, Any], today: Optional[date] = N
 
 def format_court_payment_message(accounts: List[Dict[str, Any]]) -> str:
     if not accounts:
-        return "No court payment accounts were found. " + SUBSCRIBE_MESSAGE
+        return "No court payment accounts were found."
     lines = ["Court payment accounts:"]
     for index, account in enumerate(accounts, start=1):
         expired = "yes" if account.get("is_expired") else "no"
@@ -240,6 +240,27 @@ class USLegalProPaymentService:
                 ) from exc
             raise
 
+    async def create_customer(
+        self,
+        *,
+        customer_id: str,
+        name: str,
+        email: str,
+    ) -> Dict[str, Any]:
+        client = self._client(payment=True)
+        try:
+            return await client.create_customer(
+                customer_id=customer_id,
+                name=name,
+                email=email,
+            )
+        except USLegalProApiError as exc:
+            if _is_route_missing(exc):
+                raise self._route_error(
+                    client, settings.USLEGALPRO_CREATE_CUSTOMER_PATH
+                ) from exc
+            raise
+
     async def get_credit_cards(self, customer_id: str) -> Dict[str, Any]:
         client = self._client(payment=True)
         try:
@@ -261,10 +282,7 @@ class USLegalProPaymentService:
                 "status": "not_found",
                 "customer_id": None,
                 "cards": [],
-                "message": (
-                    "This payment ID was not found. "
-                    + SUBSCRIBE_MESSAGE
-                ),
+                "message": PAYMENT_ACCOUNT_NOT_FOUND_MESSAGE,
             }
         cards_response = await self.get_credit_cards(found_id)
         cards = credit_card_items(cards_response)
@@ -282,7 +300,7 @@ class USLegalProPaymentService:
             "status": "ended",
             "customer_id": found_id,
             "cards": cards,
-            "message": "Subscription ended. " + SUBSCRIBE_MESSAGE,
+            "message": PAYMENT_ACCOUNT_NOT_FOUND_MESSAGE,
         }
 
     async def get_payment_accounts(

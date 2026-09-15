@@ -147,7 +147,7 @@ async def test_verify_platform_payment_missing_customer(monkeypatch):
     result = await USLegalProPaymentService().verify_platform_payment("missing")
     assert result["verified"] is False
     assert result["status"] == "not_found"
-    assert "subscribe" in result["message"].lower()
+    assert "no payment account found" in result["message"].lower()
 
 
 @pytest.mark.asyncio

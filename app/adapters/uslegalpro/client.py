@@ -169,6 +169,21 @@ class USLegalProClient:
         )
         return dict(response) if isinstance(response, dict) else {"item": response}
 
+    async def create_customer(
+        self,
+        *,
+        customer_id: str,
+        name: str,
+        email: str,
+    ) -> dict[str, Any]:
+        """POST {payment_domain}/payment/create_customer with name, email, and id."""
+        response = await self.post_json(
+            settings.USLEGALPRO_CREATE_CUSTOMER_PATH,
+            [{"name": name, "email": email, "id": customer_id}],
+            include_auth=False,
+        )
+        return dict(response) if isinstance(response, dict) else {"item": response}
+
     async def get_credit_cards(self, customer_id: str) -> dict[str, Any]:
         """POST {payment_domain}/payment/credit_cards with ``[customer_id]``."""
         response = await self.post_json(

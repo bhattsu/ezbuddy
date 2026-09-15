@@ -59,6 +59,19 @@ class USLegalProApiClient:
     async def find_customer(self, customer_id: str) -> dict[str, Any]:
         return await self._client.find_customer(customer_id)
 
+    async def create_customer(
+        self,
+        *,
+        customer_id: str,
+        name: str,
+        email: str,
+    ) -> dict[str, Any]:
+        return await self._client.create_customer(
+            customer_id=customer_id,
+            name=name,
+            email=email,
+        )
+
     async def get_credit_cards(self, customer_id: str) -> dict[str, Any]:
         return await self._client.get_credit_cards(customer_id)
 

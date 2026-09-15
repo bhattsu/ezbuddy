@@ -1,12 +1,18 @@
-"""Platform and court payment verification nodes (Python only, no LLM)."""
+"""Platform and court payment verification nodes."""
 
 from __future__ import annotations
 
 import logging
+import os
 import re
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from urllib.parse import urlencode
+
+from pydantic import BaseModel, Field
 
 from app.agents.conversation.orchestration.context import FilingOrchestratorContext
+from app.agents.utils.json_utils import parse_llm_json
+from app.core.prompts.context import format_llm_prompt
 from app.agents.conversation.orchestration.helpers import (
     attach_selection_options_to_result,
     classify_document_offer_reply,
@@ -16,7 +22,9 @@ from app.agents.conversation.orchestration.helpers import (
 from app.agents.conversation.orchestration.session_manager import FilingSessionManager
 from app.agents.conversation.orchestration.state import FilingGraphState
 from app.api.schemas.filing_events import FilingPhase
+from app.config.settings import settings
 from app.services.uslegalpro_payment_service import (
+    PAYMENT_ACCOUNT_NOT_FOUND_MESSAGE,
     PAYMENT_ID_PROMPT,
     PaymentApiNotConfiguredError,
     USLegalProPaymentService,
@@ -29,6 +37,483 @@ from app.services.uslegalpro_payment_service import (
 logger = logging.getLogger(__name__)
 
 NodeFn = Callable[[FilingGraphState], Any]
+
+_CREATE_CARD_PATH = "/payment/create_card"
+_PAYMENT_SETUP_PENDING_KEY = "platform_payment_setup_pending"
+_PAYMENT_SETUP_CUSTOMER_KEY = "platform_payment_setup_customer_id"
+_AWAITING_SETUP_PAYMENT_ID_KEY = "platform_payment_awaiting_setup_id"
+_AWAITING_CUSTOMER_NAME_KEY = "platform_payment_awaiting_customer_name"
+_CUSTOMER_NAME_KEY = "platform_payment_customer_name"
+_PENDING_VERIFICATION_KEY = "platform_payment_pending_verification"
+SETUP_PAYMENT_ID_PROMPT = (
+    "No Braintree account exists for that payment ID yet. "
+    "Please enter the payment ID you want to use for your account. "
+    "You choose this ID — the system does not create one for you. "
+    "Use only letters, numbers, hyphens, and underscores "
+    "(for example: COM-ULP-DEMO-2)."
+)
+CUSTOMER_NAME_PROMPT = (
+    "Please enter your full name as it appears on your payment card."
+)
+
+_PAYMENT_SETUP_REPLY_PROMPT = """You classify the user's latest message during Braintree payment setup.
+
+Context:
+- The assistant sent the user to a hosted page to add a payment method.
+- The user was told to return and enter their payment ID (Braintree customer ID).
+- Payment IDs contain only letters, numbers, hyphens, and underscores (example: COM-ULP-DEMO-2).
+
+Classify the message:
+- returned_from_payment_setup: true when the user indicates they finished or returned from the card setup page but did NOT provide a payment ID.
+- payment_id: extract the Braintree customer / payment ID when the user provides one; otherwise null.
+- intent:
+  - setup_complete — returned from setup without a payment ID
+  - provide_payment_id — message includes a payment ID to verify
+  - unclear — cannot tell; ask them to enter the payment ID
+
+User message:
+{user_message}
+"""
+
+_CUSTOMER_NAME_PROMPT = """Extract the cardholder's full name from the user message.
+
+The assistant asked for the full name as it appears on the payment card.
+
+Return full_name when the user provided a plausible person name (typically first and last).
+Return intent unclear when the message does not contain a name.
+
+User message:
+{user_message}
+"""
+
+_PAYMENT_ID_EXTRACT_PROMPT = """Extract the Braintree payment / customer ID from the user message.
+
+The assistant asked the user to choose a payment ID for their account.
+Valid IDs contain only letters, numbers, hyphens, and underscores (example: COM-ULP-DEMO-2).
+
+Return payment_id when the user provided a valid-looking ID.
+Return intent unclear when no payment ID is present.
+
+User message:
+{user_message}
+"""
+
+
+class PaymentSetupReplyOutput(BaseModel):
+    intent: Literal["setup_complete", "provide_payment_id", "unclear"] = "unclear"
+    returned_from_payment_setup: bool = False
+    payment_id: Optional[str] = Field(default=None)
+
+
+class CustomerNameOutput(BaseModel):
+    intent: Literal["provide_name", "unclear"] = "unclear"
+    full_name: Optional[str] = Field(default=None)
+
+
+class PaymentIdOutput(BaseModel):
+    intent: Literal["provide_payment_id", "unclear"] = "unclear"
+    payment_id: Optional[str] = Field(default=None)
+
+
+def _payment_return_base() -> str:
+    explicit = (
+        os.environ.get("USLEGALPRO_PAYMENT_RETURN_URL", "").strip()
+        or os.environ.get("CHATBOT_APP_BASE_URL", "").strip()
+    )
+    if explicit:
+        return explicit.rstrip("/")
+    payment_base = str(settings.USLEGALPRO_PAYMENT_API_BASE_URL or "").strip().rstrip("/")
+    return payment_base or "https://example.com"
+
+
+def _payment_flow_urls(conversation_id: str) -> Tuple[str, str]:
+    base = _payment_return_base()
+    callback = f"{base}?{urlencode({'payment_setup': 'done', 'conversation_id': conversation_id})}"
+    referer = f"{base}?{urlencode({'payment_setup': 'cancel', 'conversation_id': conversation_id})}"
+    return callback, referer
+
+
+async def _user_email_from_db(
+    ctx: FilingOrchestratorContext,
+    session,
+) -> str:
+    user_id = str(session.user_id or "").strip()
+    user_repo = ctx.user_repo
+    if not user_repo or not user_id:
+        return ""
+
+    try:
+        row = await user_repo.get_by_user_id(user_id)
+        return str((row or {}).get("email") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("User email lookup failed for user_id=%s: %s", user_id, exc)
+        return ""
+
+
+def _resolved_customer_name(session) -> str:
+    return str(session.selections.get(_CUSTOMER_NAME_KEY) or "").strip()
+
+
+async def _customer_profile_from_user(
+    ctx: FilingOrchestratorContext,
+    session,
+    payment_id: str,
+) -> Tuple[str, str]:
+    name = _resolved_customer_name(session)
+    email = await _user_email_from_db(ctx, session)
+    if not email:
+        email = f"{payment_id}@uslegalpro.local"
+    return name, email
+
+
+def _build_create_card_url(
+    *,
+    payment_domain: str,
+    customer_id: str,
+    callback: str,
+    referer: str,
+) -> str:
+    domain = payment_domain.rstrip("/")
+    query = urlencode(
+        {
+            "callback": callback,
+            "referer": referer,
+            "customer_id": customer_id,
+        }
+    )
+    return f"{domain}{_CREATE_CARD_PATH}?{query}"
+
+
+async def _ensure_braintree_customer(
+    ctx: FilingOrchestratorContext,
+    service: USLegalProPaymentService,
+    payment_id: str,
+    session,
+) -> None:
+    name, email = await _customer_profile_from_user(ctx, session, payment_id)
+    if not name:
+        raise ValueError("Customer name is required before creating a Braintree customer.")
+    await service.create_customer(
+        customer_id=payment_id,
+        name=name,
+        email=email,
+    )
+
+
+async def _classify_payment_id_reply(
+    ctx: FilingOrchestratorContext,
+    user_message: str,
+) -> PaymentIdOutput:
+    message = str(user_message or "").strip()
+    if not message:
+        return PaymentIdOutput(intent="unclear")
+
+    payment_id = extract_payment_id(message)
+    bedrock = ctx.bedrock
+    if bedrock is None:
+        if payment_id:
+            return PaymentIdOutput(intent="provide_payment_id", payment_id=payment_id)
+        return PaymentIdOutput(intent="unclear")
+
+    prompt = format_llm_prompt(
+        _PAYMENT_ID_EXTRACT_PROMPT,
+        user_message=message[:2000],
+    )
+    try:
+        parsed = await bedrock.invoke_structured_prompt(prompt, PaymentIdOutput)
+        if parsed.payment_id:
+            cleaned = extract_payment_id(str(parsed.payment_id))
+            if cleaned:
+                return PaymentIdOutput(intent="provide_payment_id", payment_id=cleaned)
+        if parsed.intent == "provide_payment_id" and payment_id:
+            return PaymentIdOutput(intent="provide_payment_id", payment_id=payment_id)
+        return parsed
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Payment ID extraction failed: %s", exc)
+
+    try:
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 256,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        raw = await bedrock.invoke_prompt_with_timeout(body)
+        parsed_json = parse_llm_json(raw)
+        parsed = PaymentIdOutput.model_validate(parsed_json)
+        if parsed.payment_id:
+            cleaned = extract_payment_id(str(parsed.payment_id))
+            if cleaned:
+                return PaymentIdOutput(intent="provide_payment_id", payment_id=cleaned)
+        if parsed.intent == "provide_payment_id" and payment_id:
+            return PaymentIdOutput(intent="provide_payment_id", payment_id=payment_id)
+        return parsed
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Payment ID extraction fallback failed: %s", exc)
+        if payment_id:
+            return PaymentIdOutput(intent="provide_payment_id", payment_id=payment_id)
+        return PaymentIdOutput(intent="unclear")
+
+
+async def _classify_customer_name_reply(
+    ctx: FilingOrchestratorContext,
+    user_message: str,
+) -> CustomerNameOutput:
+    message = str(user_message or "").strip()
+    if not message:
+        return CustomerNameOutput(intent="unclear")
+
+    bedrock = ctx.bedrock
+    if bedrock is None:
+        if len(message.split()) >= 2:
+            return CustomerNameOutput(intent="provide_name", full_name=message)
+        return CustomerNameOutput(intent="unclear")
+
+    prompt = format_llm_prompt(
+        _CUSTOMER_NAME_PROMPT,
+        user_message=message[:2000],
+    )
+    try:
+        return await bedrock.invoke_structured_prompt(prompt, CustomerNameOutput)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Customer name extraction failed: %s", exc)
+
+    try:
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 256,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        raw = await bedrock.invoke_prompt_with_timeout(body)
+        parsed = parse_llm_json(raw)
+        return CustomerNameOutput.model_validate(parsed)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Customer name extraction fallback failed: %s", exc)
+        if len(message.split()) >= 2:
+            return CustomerNameOutput(intent="provide_name", full_name=message)
+        return CustomerNameOutput(intent="unclear")
+
+
+async def _classify_payment_setup_reply(
+    ctx: FilingOrchestratorContext,
+    user_message: str,
+) -> PaymentSetupReplyOutput:
+    message = str(user_message or "").strip()
+    if not message:
+        return PaymentSetupReplyOutput(intent="unclear")
+
+    bedrock = ctx.bedrock
+    if bedrock is None:
+        payment_id = extract_payment_id(message)
+        if payment_id:
+            return PaymentSetupReplyOutput(
+                intent="provide_payment_id",
+                payment_id=payment_id,
+            )
+        return PaymentSetupReplyOutput(intent="unclear")
+
+    prompt = format_llm_prompt(
+        _PAYMENT_SETUP_REPLY_PROMPT,
+        user_message=message[:2000],
+    )
+    try:
+        return await bedrock.invoke_structured_prompt(prompt, PaymentSetupReplyOutput)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Payment setup reply classification failed: %s", exc)
+
+    try:
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 256,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        raw = await bedrock.invoke_prompt_with_timeout(body)
+        parsed = parse_llm_json(raw)
+        return PaymentSetupReplyOutput.model_validate(parsed)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Payment setup reply fallback failed: %s", exc)
+        payment_id = extract_payment_id(message)
+        if payment_id:
+            return PaymentSetupReplyOutput(
+                intent="provide_payment_id",
+                payment_id=payment_id,
+            )
+        return PaymentSetupReplyOutput(intent="unclear")
+
+
+async def _prompt_setup_payment_id(
+    ctx,
+    state,
+    session,
+    verification: Dict[str, Any],
+):
+    session.selections[_AWAITING_SETUP_PAYMENT_ID_KEY] = True
+    session.selections[_PENDING_VERIFICATION_KEY] = verification
+    session.selections.pop(_PAYMENT_SETUP_CUSTOMER_KEY, None)
+    session.selections["platform_payment_customer_id"] = None
+    session.selections["platform_payment_status"] = verification.get("status")
+    session.selections["platform_payment_verified"] = False
+
+    result = result_from_session(
+        session,
+        SETUP_PAYMENT_ID_PROMPT,
+        event_kind="payment.platform",
+        metadata={"platform_payment": verification},
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _prompt_customer_name(
+    ctx,
+    state,
+    session,
+    payment_id: str,
+    verification: Dict[str, Any],
+):
+    session.selections[_AWAITING_CUSTOMER_NAME_KEY] = True
+    session.selections[_PAYMENT_SETUP_CUSTOMER_KEY] = payment_id
+    session.selections[_PENDING_VERIFICATION_KEY] = verification
+    session.selections["platform_payment_id"] = payment_id
+    session.selections["platform_payment_customer_id"] = None
+    session.selections["platform_payment_status"] = verification.get("status")
+    session.selections["platform_payment_verified"] = False
+
+    message = (
+        f"Your payment ID will be registered as {payment_id}. "
+        + CUSTOMER_NAME_PROMPT
+    )
+    result = result_from_session(
+        session,
+        message,
+        event_kind="payment.platform",
+        metadata={"platform_payment": verification},
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _begin_payment_setup(
+    ctx,
+    service: USLegalProPaymentService,
+    state,
+    session,
+    verification: Dict[str, Any],
+):
+    session.selections[_PENDING_VERIFICATION_KEY] = verification
+    setup_payment_id = str(session.selections.get(_PAYMENT_SETUP_CUSTOMER_KEY) or "").strip()
+    if not setup_payment_id:
+        return await _prompt_setup_payment_id(ctx, state, session, verification)
+
+    name = _resolved_customer_name(session)
+    if not name:
+        return await _prompt_customer_name(
+            ctx, state, session, setup_payment_id, verification
+        )
+    return await _redirect_to_payment_setup(
+        ctx,
+        service,
+        state,
+        session,
+        setup_payment_id,
+        verification,
+    )
+
+
+async def _redirect_to_payment_setup(
+    ctx,
+    service: USLegalProPaymentService,
+    state,
+    session,
+    payment_id: str,
+    verification: Dict[str, Any],
+    *,
+    create_customer: bool = True,
+):
+    payment_domain = str(settings.USLEGALPRO_PAYMENT_API_BASE_URL or "").strip()
+    if not payment_domain:
+        result = result_from_session(
+            session,
+            (
+                "This payment ID was not found, but the payment service is not configured. "
+                "Set USLEGALPRO_PAYMENT_API_BASE_URL to continue."
+            ),
+            event_kind="payment.platform",
+            metadata={"platform_payment": verification},
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
+    if create_customer:
+        try:
+            await _ensure_braintree_customer(ctx, service, payment_id, session)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Braintree create_customer failed for payment_id=%s: %s",
+                payment_id,
+                exc,
+            )
+
+    callback, referer = _payment_flow_urls(session.conversation_id)
+    create_card_url = _build_create_card_url(
+        payment_domain=payment_domain,
+        customer_id=payment_id,
+        callback=callback,
+        referer=referer,
+    )
+    session.selections[_PAYMENT_SETUP_PENDING_KEY] = True
+    session.selections[_PAYMENT_SETUP_CUSTOMER_KEY] = payment_id
+    session.selections["platform_payment_id"] = payment_id
+    session.selections["platform_payment_customer_id"] = None
+    session.selections["platform_payment_status"] = verification.get("status")
+    session.selections["platform_payment_verified"] = False
+
+    message = (
+        f"{PAYMENT_ACCOUNT_NOT_FOUND_MESSAGE}\n"
+        "Please add a payment method using this link:\n"
+        f"{create_card_url}\n\n"
+        "After you finish, return here and enter your payment ID to continue."
+    )
+    result = result_from_session(
+        session,
+        message,
+        event_kind="payment.platform",
+        metadata={
+            "platform_payment": verification,
+            "redirect_url": create_card_url,
+            "payment_setup": {
+                "customer_id": payment_id,
+                "create_card_url": create_card_url,
+                "callback": callback,
+                "referer": referer,
+                "pending": True,
+            },
+        },
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
 
 
 def _with_account_options(result, accounts):
@@ -62,21 +547,146 @@ def build_payment_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
     return {"verify_payment": verify_payment_node}
 
 
-async def _handle_platform_payment(ctx, service, state, session, user_message):
-    payment_id = extract_payment_id(user_message)
-    if not payment_id:
-        result = result_from_session(
-            session,
-            PAYMENT_ID_PROMPT,
-            event_kind="payment.platform",
+def _clear_payment_setup_pending(session) -> None:
+    session.selections.pop(_PAYMENT_SETUP_PENDING_KEY, None)
+    session.selections.pop(_PAYMENT_SETUP_CUSTOMER_KEY, None)
+    session.selections.pop(_PENDING_VERIFICATION_KEY, None)
+
+
+def _clear_awaiting_setup_payment_id(session) -> None:
+    session.selections.pop(_AWAITING_SETUP_PAYMENT_ID_KEY, None)
+
+
+def _clear_awaiting_customer_name(session) -> None:
+    session.selections.pop(_AWAITING_CUSTOMER_NAME_KEY, None)
+
+
+async def _prompt_platform_payment_id(ctx, state, session):
+    result = result_from_session(
+        session,
+        PAYMENT_ID_PROMPT,
+        event_kind="payment.platform",
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _prompt_setup_payment_id_again(ctx, state, session):
+    result = result_from_session(
+        session,
+        SETUP_PAYMENT_ID_PROMPT,
+        event_kind="payment.platform",
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _prompt_customer_name_again(ctx, state, session):
+    payment_id = str(session.selections.get(_PAYMENT_SETUP_CUSTOMER_KEY) or "").strip()
+    message = CUSTOMER_NAME_PROMPT
+    if payment_id:
+        message = (
+            f"Your payment ID will be registered as {payment_id}. "
+            + CUSTOMER_NAME_PROMPT
         )
-        await persist_system_state(ctx.conversation_repo, session)
-        return {
-            **state,
-            "phase": session.phase.value,
-            "result": result,
-            "next_node": "persist",
-        }
+    result = result_from_session(
+        session,
+        message,
+        event_kind="payment.platform",
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _handle_awaiting_setup_payment_id(ctx, service, state, session, user_message):
+    id_reply = await _classify_payment_id_reply(ctx, user_message)
+    payment_id = str(id_reply.payment_id or "").strip()
+    if id_reply.intent != "provide_payment_id" or not payment_id:
+        return await _prompt_setup_payment_id_again(ctx, state, session)
+
+    verification = session.selections.get(_PENDING_VERIFICATION_KEY) or {
+        "verified": False,
+        "status": "not_found",
+    }
+    session.selections[_PAYMENT_SETUP_CUSTOMER_KEY] = payment_id
+    session.selections["platform_payment_id"] = payment_id
+    _clear_awaiting_setup_payment_id(session)
+    return await _begin_payment_setup(ctx, service, state, session, verification)
+
+
+async def _handle_awaiting_customer_name(ctx, service, state, session, user_message):
+    name_reply = await _classify_customer_name_reply(ctx, user_message)
+    full_name = str(name_reply.full_name or "").strip()
+    if name_reply.intent != "provide_name" or not full_name:
+        return await _prompt_customer_name_again(ctx, state, session)
+
+    session.selections[_CUSTOMER_NAME_KEY] = full_name
+    payment_id = str(session.selections.get(_PAYMENT_SETUP_CUSTOMER_KEY) or "").strip()
+    verification = session.selections.get(_PENDING_VERIFICATION_KEY) or {
+        "verified": False,
+        "status": "not_found",
+    }
+    _clear_awaiting_customer_name(session)
+    if not payment_id:
+        return await _prompt_platform_payment_id(ctx, state, session)
+    return await _redirect_to_payment_setup(
+        ctx,
+        service,
+        state,
+        session,
+        payment_id,
+        verification,
+    )
+
+
+async def _handle_platform_payment(ctx, service, state, session, user_message):
+    if session.selections.get(_AWAITING_SETUP_PAYMENT_ID_KEY):
+        return await _handle_awaiting_setup_payment_id(
+            ctx, service, state, session, user_message
+        )
+    if session.selections.get(_AWAITING_CUSTOMER_NAME_KEY):
+        return await _handle_awaiting_customer_name(
+            ctx, service, state, session, user_message
+        )
+
+    pending_setup = bool(session.selections.get(_PAYMENT_SETUP_PENDING_KEY))
+    payment_id = ""
+
+    if pending_setup:
+        setup_reply = await _classify_payment_setup_reply(ctx, user_message)
+        if setup_reply.intent == "setup_complete" or (
+            setup_reply.returned_from_payment_setup and not setup_reply.payment_id
+        ):
+            _clear_payment_setup_pending(session)
+            return await _prompt_platform_payment_id(ctx, state, session)
+        if setup_reply.payment_id:
+            payment_id = str(setup_reply.payment_id).strip()
+        else:
+            payment_id = extract_payment_id(user_message)
+        if setup_reply.intent == "unclear" and not payment_id:
+            _clear_payment_setup_pending(session)
+            return await _prompt_platform_payment_id(ctx, state, session)
+        _clear_payment_setup_pending(session)
+    else:
+        payment_id = extract_payment_id(user_message)
+
+    if not payment_id:
+        return await _prompt_platform_payment_id(ctx, state, session)
 
     await ctx.notify("verifying_platform_payment")
     try:
@@ -116,6 +726,25 @@ async def _handle_platform_payment(ctx, service, state, session, user_message):
     session.selections["platform_payment_verified"] = bool(verification.get("verified"))
 
     if not verification.get("verified"):
+        if verification.get("status") == "not_found":
+            session.selections.pop(_PAYMENT_SETUP_CUSTOMER_KEY, None)
+            return await _begin_payment_setup(
+                ctx,
+                service,
+                state,
+                session,
+                verification,
+            )
+        if verification.get("status") == "ended":
+            return await _redirect_to_payment_setup(
+                ctx,
+                service,
+                state,
+                session,
+                payment_id,
+                verification,
+                create_customer=False,
+            )
         result = result_from_session(
             session,
             str(verification.get("message") or PAYMENT_ID_PROMPT),
