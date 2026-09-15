@@ -590,7 +590,12 @@
       <h2>Sign in</h2>
       <p>Use your US Legal Pro account to start a filing assistant session.</p>
       <label for="loginApiBase">Backend server</label>
-      <input id="loginApiBase" type="text" spellcheck="false" />
+      <input
+        id="loginApiBase"
+        type="text"
+        spellcheck="false"
+        placeholder="http://localhost:8000"
+      />
       <label for="loginState">State</label>
       <select id="loginState">
         <option value="ca">California (ca)</option>
@@ -684,17 +689,30 @@
 
   <script>
     (function () {
-      // const DEFAULT_API = "http://ezbuddy-alb-783581008.us-east-2.elb.amazonaws.com";
       const DEFAULT_API = "http://localhost:8000";
 
-      function resolveApiBase() {
-        const saved = localStorage.getItem("uslp_api_base");
-        if (saved) return saved.replace(/\/$/, "");
-        const origin = window.location.origin;
-        if (origin && origin !== "null" && !origin.startsWith("file:")) {
-          return origin.replace(/\/$/, "");
+      function isLocalApiUrl(url) {
+        try {
+          const host = new URL(url).hostname.toLowerCase();
+          return host === "localhost" || host === "127.0.0.1";
+        } catch (_) {
+          return false;
         }
-        return DEFAULT_API;
+      }
+
+      /** Local dev: always talk to the FastAPI server on localhost (not a saved remote URL). */
+      function normalizeApiBase(raw) {
+        const value = String(raw || DEFAULT_API).trim().replace(/\/$/, "");
+        return isLocalApiUrl(value) ? value : DEFAULT_API;
+      }
+
+      function resolveApiBase() {
+        const saved = (localStorage.getItem("uslp_api_base") || "").trim();
+        const base = normalizeApiBase(saved || DEFAULT_API);
+        if (saved && base !== saved.replace(/\/$/, "")) {
+          localStorage.setItem("uslp_api_base", base);
+        }
+        return base;
       }
 
       const els = {
@@ -780,9 +798,10 @@
 
       async function performLogin() {
         els.loginError.textContent = "";
-        apiBase = (els.loginApiBase.value || DEFAULT_API).trim().replace(/\/$/, "");
+        apiBase = normalizeApiBase(els.loginApiBase.value);
         localStorage.setItem("uslp_api_base", apiBase);
         els.apiBase.value = apiBase;
+        els.loginApiBase.value = apiBase;
 
         const email = els.loginEmail.value.trim();
         const password = els.loginPassword.value;
@@ -1122,7 +1141,21 @@
           addBubble("assistant", payload.message || "");
           if (payload.phase) els.stateCode.textContent = `phase ${payload.phase}`;
           syncUploadFromPhase(payload.phase);
-          renderSelectionOptions(payload.selection_options);
+          const opts = payload.selection_options;
+          if (
+            opts
+            && payload.phase
+            && opts.phase
+            && opts.phase !== payload.phase
+          ) {
+            clearSelectionOptions();
+            setStatus(
+              "Dropdown options were out of sync with the current step; please send your message again.",
+              "error"
+            );
+          } else {
+            renderSelectionOptions(opts);
+          }
           if (payload.checklist) {
             const c = payload.checklist;
             addBubble("system", `Checklist: ${c.answered}/${c.total} answered`);
@@ -1415,9 +1448,10 @@
       }
 
       function saveApiBaseAndReconnect() {
-        apiBase = (els.loginApiBase.value || els.apiBase.value || DEFAULT_API).trim().replace(/\/$/, "");
+        apiBase = normalizeApiBase(els.loginApiBase.value || els.apiBase.value);
         localStorage.setItem("uslp_api_base", apiBase);
         els.apiBase.value = apiBase;
+        els.loginApiBase.value = apiBase;
         conversationId = null;
         seeded = false;
         clearChat();

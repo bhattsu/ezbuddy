@@ -32,6 +32,13 @@ _SELECTION_KEYS = (
     "doc_type",
 )
 _NAME_TOKENS = ("name", "full_name", "first_name", "last_name", "petitioner", "respondent")
+_FIELD_ALIASES: Dict[str, tuple[str, ...]] = {
+    "license number": ("license", "licence", "dl", "driver", "id_number"),
+    "license": ("license", "licence", "dl", "driver"),
+    "phone": ("phone", "telephone", "mobile", "cell"),
+    "email": ("email", "e_mail"),
+    "address": ("address", "street", "mailing"),
+}
 
 
 def looks_like_detail_correction(text: str) -> bool:
@@ -138,6 +145,20 @@ def _match_answer_fields(session: FilingSession, field_hint: str) -> List[str]:
         scored.sort(key=lambda item: (-item[0], item[1]))
         best = scored[0][0]
         return [name for score, name in scored if score == best]
+    hint_norm = re.sub(r"\s+", " ", hint).strip()
+    for alias_key, tokens in _FIELD_ALIASES.items():
+        if alias_key in hint_norm or hint_norm in alias_key:
+            alias_scored: List[tuple[int, str]] = []
+            for question in session.workflow_questions:
+                name = str(question.get("field_name") or "").strip()
+                if not name:
+                    continue
+                label = str(question.get("field_label") or name).lower()
+                blob = re.sub(r"[^a-z0-9]+", " ", f"{name} {label}")
+                if any(token in blob for token in tokens):
+                    alias_scored.append((2, name))
+            if alias_scored:
+                return [alias_scored[0][1]]
     if any(token in _NAME_TOKENS for token in hint_tokens) or hint in {"name", "the name"}:
         names = [
             str(q.get("field_name") or "")

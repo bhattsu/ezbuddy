@@ -50,6 +50,15 @@ from app.agents.conversation.orchestration.detail_corrections import (
     apply_chat_detail_corrections,
     correction_summary,
 )
+from app.agents.conversation.orchestration.flow_redirects import (
+    apply_flow_redirect,
+    clear_pending_flow_redirect,
+    enrich_failure_with_guidance,
+    looks_like_case_number_entry,
+    reconcile_missed_jurisdiction_redirect,
+    resolve_flow_redirect,
+    sync_phase_after_court_change,
+)
 from app.agents.conversation.orchestration.session_manager import FilingSessionManager
 from app.agents.conversation.orchestration.state import (
     FilingGraphState,
@@ -242,6 +251,7 @@ async def _finalize_existing_case_lookup(
     )
     cache_existing_case_details(session, case_detail)
     apply_existing_search_attrs(session, search_item, case_detail)
+    clear_pending_flow_redirect(session)
     session.phase = FilingPhase.EXISTING_CASE_CONFIRM
     await ctx.notify("existing_case_confirm")
     existing_api_message = _format_existing_case_confirmation(search_item, case_detail)
@@ -914,6 +924,29 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         if loading:
             await ctx.notify(loading)
 
+        session_auth_token = await auth_token_for_user(
+            ctx.user_repo, session.user_id
+        )
+
+        last_assistant = ""
+        for row in reversed(history or []):
+            if str(row.get("role") or "").lower() == "assistant":
+                last_assistant = str(row.get("content") or "")
+                break
+        flow_redirect_msg = ""
+        redirect = resolve_flow_redirect(
+            session,
+            user_message,
+            last_assistant_message=last_assistant,
+        )
+        if redirect:
+            flow_redirect_msg = apply_flow_redirect(session, redirect)
+            logger.info(
+                "Flow redirect applied label=%s target=%s",
+                redirect.label,
+                redirect.target_phase.value,
+            )
+
         await capture_new_case_topic(
             session,
             user_message,
@@ -924,9 +957,6 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             ctx.filing_repo, session, user_message, bedrock=ctx.bedrock
         )
 
-        session_auth_token = await auth_token_for_user(
-            ctx.user_repo, session.user_id
-        )
         db_options = await load_db_options(
             ctx.filing_repo,
             session.phase,
@@ -946,7 +976,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         llm_out: Dict[str, Any] = {}
         raw_update: Dict[str, Any] = {}
         candidate_message = ""
-        matched_locally = False
+        matched_locally = bool(flow_redirect_msg)
         candidates: List[Dict[str, Any]] = []
         response_options_override: Optional[List[Dict[str, Any]]] = None
         is_session_start = user_message == GREETING_USER_MESSAGE
@@ -973,8 +1003,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         ):
             typed = user_message.strip()
             if session.phase == FilingPhase.EXISTING_ENTER_CASE_NUMBER:
-                validated = {"case_number": typed}
-                matched_locally = True
+                if looks_like_case_number_entry(session, typed):
+                    validated = {"case_number": typed}
+                    matched_locally = True
             elif session.phase == FilingPhase.EXISTING_CASE_CONFIRM and is_affirmative_reply(
                 typed
             ):
@@ -1055,7 +1086,25 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         # Party append: accumulate parties list from validated "party" key
         _append_party_to_session(session, validated)
 
+        prior_jurisdiction_code = str(session.selections.get("jurisdiction_code") or "")
         merge_selections(session, validated)
+        if sync_phase_after_court_change(session, prior_jurisdiction_code):
+            matched_locally = True
+            db_options = await load_db_options(
+                ctx.filing_repo,
+                session.phase,
+                session.selections,
+                codes_service=ctx.codes_service,
+                mode=session.mode,
+                bedrock=ctx.bedrock,
+                auth_token=session_auth_token or None,
+            )
+            cache_phase_options(session, session.phase, db_options)
+            logger.info(
+                "Court switch recovery applied phase=%s jurisdiction=%s",
+                session.phase.value,
+                session.selections.get("jurisdiction_code"),
+            )
         existing_api_message = ""
         existing_api_handled = False
         case_number_input = str(session.selections.get("case_number") or "").strip()
@@ -1095,9 +1144,14 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 )
                 if not search_items:
                     api_message = str(search_response.get("message") or "").strip()
-                    existing_api_message = api_message or (
-                        "No case was found for that case number and jurisdiction. "
-                        "Please verify both values and try again."
+                    existing_api_message = enrich_failure_with_guidance(
+                        session,
+                        api_message
+                        or (
+                            "No case was found for that case number and jurisdiction. "
+                            "Please verify both values and try again."
+                        ),
+                        context="case_search",
                     )
                     session.selections.pop("case_number", None)
                 else:
@@ -1128,11 +1182,19 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                     jurisdiction_code,
                     exc,
                 )
-                existing_api_message = format_existing_case_api_error(exc)
+                existing_api_message = enrich_failure_with_guidance(
+                    session,
+                    format_existing_case_api_error(exc),
+                    context="case_search",
+                )
                 session.selections.pop("case_number", None)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Existing-case API lookup failed")
-                existing_api_message = format_existing_case_api_error(exc)
+                existing_api_message = enrich_failure_with_guidance(
+                    session,
+                    format_existing_case_api_error(exc),
+                    context="case_search",
+                )
                 session.selections.pop("case_number", None)
 
         phase_before = session.phase
@@ -1188,12 +1250,52 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         advance_phase_after_selections(session)
         await apply_catalog_shortcuts(ctx.filing_repo, session, bedrock=ctx.bedrock)
 
+        if flow_redirect_msg:
+            redirect_options = await load_db_options(
+                ctx.filing_repo,
+                session.phase,
+                session.selections,
+                codes_service=ctx.codes_service,
+                mode=session.mode,
+                bedrock=ctx.bedrock,
+                auth_token=session_auth_token or None,
+            )
+            cache_phase_options(session, session.phase, redirect_options)
+            db_options = redirect_options
+            built_redirect = build_phase_selection_message(
+                session.phase.value, session.selections, redirect_options
+            )
+            flow_redirect_msg = sanitize_assistant_text(
+                built_redirect or flow_redirect_msg
+            )
+
         assistant_message = (
-            existing_api_message
+            flow_redirect_msg
+            or existing_api_message
             or template_message
             or candidate_message
             or str(llm_out.get("assistant_message") or "")
         )
+        if (
+            not flow_redirect_msg
+            and not existing_api_message
+            and not db_options
+            and session.phase
+            in {
+                FilingPhase.SELECTING_JURISDICTION,
+                FilingPhase.SELECTING_CASE_CATEGORY,
+                FilingPhase.SELECTING_CASE_TYPE,
+                FilingPhase.SELECTING_FILING_CODE,
+                FilingPhase.SELECTING_DOC_TYPE_CODE,
+                FilingPhase.EXISTING_SELECTING_JURISDICTION,
+            }
+            and assistant_message.strip()
+        ):
+            assistant_message = enrich_failure_with_guidance(
+                session,
+                assistant_message,
+                context="no_options",
+            )
         used_court_rules_rag = False
 
         # Generic legal Q&A: retrieve court-rules chunks from OpenSearch.
@@ -1271,6 +1373,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                         session.phase.value,
                         session.selections,
                     )
+
+        if existing_api_message and session.phase == FilingPhase.EXISTING_CASE_CONFIRM:
+            assistant_message = sanitize_assistant_text(existing_api_message)
 
         # A locally matched selection produces no LLM text, so re-show the
         # current phase options if nothing else filled the reply.
@@ -1358,6 +1463,32 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "result": result,
                 "next_node": "persist",
             }
+
+        reconcile_msg = reconcile_missed_jurisdiction_redirect(
+            session,
+            user_message,
+            assistant_message=assistant_message,
+        )
+        if reconcile_msg:
+            response_options_override = await load_db_options(
+                ctx.filing_repo,
+                session.phase,
+                session.selections,
+                codes_service=ctx.codes_service,
+                mode=session.mode,
+                bedrock=ctx.bedrock,
+                auth_token=session_auth_token or None,
+            )
+            cache_phase_options(session, session.phase, response_options_override)
+            built = build_phase_selection_message(
+                session.phase.value, session.selections, response_options_override
+            )
+            assistant_message = sanitize_assistant_text(built or reconcile_msg)
+            logger.info(
+                "Reconciled missed jurisdiction redirect phase=%s options=%s",
+                session.phase.value,
+                len(response_options_override),
+            )
 
         await persist_system_state(ctx.conversation_repo, session)
         response_options = await options_for_response(

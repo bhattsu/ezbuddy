@@ -64,6 +64,26 @@ def test_change_name_updates_collected_answer_and_checklist():
     assert item.value == "John Doe"
 
 
+def test_change_license_number_updates_matching_field():
+    session = _session()
+    session.workflow_questions.append(
+        {"field_name": "DRIVER_LICENSE", "field_label": "Driver license number"}
+    )
+    session.checklist.items.append(
+        ChecklistItem(
+            field_name="DRIVER_LICENSE",
+            label="Driver license number",
+            status="answered",
+            value="OLD123",
+        )
+    )
+    session.collected_answers["DRIVER_LICENSE"] = "OLD123"
+    changed = apply_chat_detail_corrections(session, "change license number to TX998877")
+    sync_checklist_from_answers(session)
+    assert "DRIVER_LICENSE" in changed
+    assert session.collected_answers["DRIVER_LICENSE"] == "TX998877"
+
+
 def test_change_to_without_children_updates_subtype():
     session = _session()
     changed = apply_chat_detail_corrections(

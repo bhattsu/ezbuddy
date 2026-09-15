@@ -8,6 +8,9 @@ from app.agents.conversation.orchestration.state import FilingGraphState
 from app.agents.conversation.orchestration.detail_corrections import (
     looks_like_detail_correction,
 )
+from app.agents.conversation.orchestration.flow_redirects import (
+    looks_like_flow_redirect,
+)
 from app.api.schemas.filing_events import FilingPhase
 
 _OFFER_PHASES = {
@@ -31,11 +34,18 @@ def route_after_message_prepare(
     if state.get("next_node") == "persist" or state.get("result") is not None:
         return "persist"
     phase = state.get("phase") or ""
+    user_message = state.get("user_message") or ""
     if phase in _OFFER_PHASES:
-        if looks_like_detail_correction(state.get("user_message") or ""):
+        if looks_like_flow_redirect(user_message):
+            return "navigation"
+        if looks_like_detail_correction(user_message):
             return "workflow"
         return "offer_documents"
     if phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS.value:
+        if looks_like_flow_redirect(user_message) and not looks_like_detail_correction(
+            user_message
+        ):
+            return "navigation"
         return "workflow"
     if phase in {
         FilingPhase.VERIFYING_PLATFORM_PAYMENT.value,

@@ -765,9 +765,24 @@ def format_existing_case_api_error(exc: Exception) -> str:
     )
 
 
+_EXISTING_INTENT_ENTRY_PHASES = frozenset(
+    {
+        FilingPhase.GREETING,
+        FilingPhase.INTENT_PENDING,
+        FilingPhase.EXISTING_SELECTING_STATE,
+    }
+)
+
+
 def advance_mode_from_intent(session: FilingSession, intent: str) -> None:
     """Apply new/existing/generic intent after the shared state step."""
     if session.phase == FilingPhase.SELECTING_STATE:
+        if intent == "generic_legal":
+            session.mode = FilingMode.GENERIC
+        elif intent == "filing_new":
+            session.mode = FilingMode.FILING_NEW
+        elif intent == "filing_existing":
+            session.mode = FilingMode.FILING_EXISTING
         return
     if intent == "generic_legal":
         session.mode = FilingMode.GENERIC
@@ -780,6 +795,9 @@ def advance_mode_from_intent(session: FilingSession, intent: str) -> None:
                 session.phase = FilingPhase.SELECTING_STATE
     elif intent == "filing_existing":
         session.mode = FilingMode.FILING_EXISTING
+        # Do not rewind mid-flow when the model repeats filing_existing on later turns.
+        if session.phase not in _EXISTING_INTENT_ENTRY_PHASES:
+            return
         if session.selections.get("state_code"):
             session.phase = FilingPhase.EXISTING_SELECTING_JURISDICTION
         else:
