@@ -7,6 +7,7 @@ import pytest
 from app.services.uslegalpro_codes_service import CodeBundle
 from app.services.uslegalpro_efile_service import (
     USLegalProEFileService,
+    draft_reference_id,
     unique_reference_id,
 )
 
@@ -17,6 +18,14 @@ def test_unique_reference_id_is_unique():
     assert first.startswith("EFILE-")
     assert second.startswith("EFILE-")
     assert first != second
+
+
+def test_draft_reference_id_uses_utc_timestamp_with_milliseconds():
+    ref_id = draft_reference_id()
+    assert ref_id.startswith("DRAFT-")
+    _, year, timestamp_ms = ref_id.split("-", 2)
+    assert year.isdigit() and len(year) == 4
+    assert timestamp_ms.isdigit() and len(timestamp_ms) == 17
 
 
 def _bundle() -> CodeBundle:

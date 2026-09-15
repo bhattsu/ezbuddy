@@ -107,7 +107,7 @@ The comments below are explanatory; remove them before sending JSON.
 {
   "data": {
     "filer_type": "54325",             // filer_type_codes[].code
-    "reference_id": "DRAFT-2026-1003458", // unique caller value
+    "reference_id": "DRAFT-2026-20260915114130123", // unique caller value (UTC timestamp + ms)
     "jurisdiction": "harris:dc",       // jurisdiction_codes[].code
     "payment_account_id": "013af35d-66f2-4aa8-85bc-d3aecf8c4443",
     "filings": [

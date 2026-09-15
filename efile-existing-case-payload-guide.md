@@ -211,7 +211,7 @@ instead of re-fetching the case.
 Each dropdown shows the API item's `name` and stores its `code`.
 `filing_party_id` is always resolved to an `id` from `existing_case_parties`.
 `filer_type` is sent only when the court returned filer types.
-`reference_id` is generated as `DRAFT-<year>-<seconds-of-day><random digit>`.
+`reference_id` is generated as `DRAFT-<year>-<YYYYMMDDHHMMSS><milliseconds>` (UTC), e.g. `DRAFT-2026-20260915114130123`.
 
 ## Developer checks
 

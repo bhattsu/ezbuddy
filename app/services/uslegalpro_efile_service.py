@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -79,15 +78,16 @@ def unique_reference_id(prefix: str = "EFILE") -> str:
 
 
 def draft_reference_id(year: Optional[int] = None) -> str:
-    """``DRAFT-<year>-<seconds-of-day><random digit>``, e.g. ``DRAFT-2026-104984``.
+    """``DRAFT-<year>-<YYYYMMDDHHMMSS><milliseconds>``, e.g. ``DRAFT-2026-20260915114130123``.
 
-    The time component makes the value change every second and the trailing
-    random digit keeps two filings submitted in the same second apart.
+    Uses UTC date/time with millisecond precision so concurrent filings from
+    different users are extremely unlikely to collide.
     """
     now = datetime.now(timezone.utc)
     current_year = year or now.year
-    seconds_of_day = now.hour * 3600 + now.minute * 60 + now.second
-    return f"DRAFT-{current_year}-{seconds_of_day:05d}{random.randint(0, 9)}"
+    milliseconds = now.microsecond // 1000
+    timestamp = now.strftime("%Y%m%d%H%M%S")
+    return f"DRAFT-{current_year}-{timestamp}{milliseconds:03d}"
 
 
 async def _fetch_url_size(url: str, timeout: float = 15.0) -> Optional[int]:
