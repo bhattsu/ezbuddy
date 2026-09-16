@@ -535,6 +535,8 @@ async def load_db_options(
         return [case] if case else []
     if phase == FilingPhase.VERIFYING_COURT_PAYMENT:
         return list(selections.get("court_payment_accounts") or [])
+    if phase == FilingPhase.SELECTING_BRAINTREE_CARD:
+        return list(selections.get("platform_payment_cards") or [])
     if phase == FilingPhase.CONFIRMING_EFILE:
         return []
     if phase in (FilingPhase.EXISTING_SEARCH_PARTY, FilingPhase.EXISTING_SEARCH_DATE):

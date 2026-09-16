@@ -237,45 +237,28 @@ async def test_authenticate_and_get_payment_accounts(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_court_payment_submission_completes_and_stores_envelope():
+async def test_court_payment_stores_account_and_moves_to_braintree_cards():
+    class _PaymentService:
+        async def get_credit_cards(self, customer_id):
+            return {
+                "items": [
+                    {
+                        "id": "1m1xrwdt",
+                        "name": "Primary",
+                        "last4": "7777",
+                        "expire_month": "05",
+                        "expire_year": "2030",
+                    }
+                ]
+            }
+
     class _ConversationRepo:
-        def __init__(self):
-            self.completed = False
-
-        async def complete_conversation(self, conversation_id):
-            self.completed = True
-            return {"conversation_id": conversation_id}
-
-        async def insert_system_message(self, conversation_id, message):
-            return {"conversation_id": conversation_id, "message": message}
-
-        async def get_conversation(self, conversation_id):
-            return {"conversation_id": conversation_id, "session_id": "33333333-3333-3333-3333-333333333333"}
-
-    class _SubmitRepo:
-        async def resolve_provider_id(self, _types):
-            return "11111111-1111-1111-1111-111111111111"
-
-        async def insert_submission(self, **kwargs):
-            assert kwargs["reference_number"] == "REF-123"
-            return {"submission_id": "22222222-2222-2222-2222-222222222222"}
-
-    class _EFileService:
-        async def submit(self, **kwargs):
-            assert kwargs["mode"] == "filing_existing"
-            return SimpleNamespace(
-                envelope_id="325900",
-                reference_id="REF-123",
-                status="processing",
-                message="submitted",
-                raw={"item": {"id": "325900"}},
-            )
+        async def insert_system_message(self, *args, **kwargs):
+            return None
 
     class _Ctx:
         def __init__(self):
             self.conversation_repo = _ConversationRepo()
-            self.submission_repo = _SubmitRepo()
-            self.efile_service = _EFileService()
 
         async def notify(self, _process, message=None, level=None):
             return {"process": _process, "message": message, "level": level}
@@ -288,20 +271,17 @@ async def test_court_payment_submission_completes_and_stores_envelope():
     )
     session.selections = {
         "state_code": "tx",
-        "case_tracking_id": "CT-1",
-        "document_type_code": "44889",
-        "filing_code": "29736",
-        "efile_file_url": "https://example.com/notice.pdf",
-        "court_payment_accounts": [{"id": "acct-1", "name": "Primary"}],
+        "platform_payment_customer_id": "COM-ULP-DEMO-1",
+        "court_payment_accounts": [{"id": "acct-1", "name": "Primary", "label": "Primary"}],
     }
 
     output = await _handle_court_payment(
         _Ctx(),
-        object(),
+        _PaymentService(),
         {"conversation_id": "conv-1"},
         session,
         "acct-1",
     )
-    assert session.phase == FilingPhase.COMPLETE
-    assert session.selections["envelope_id"] == "325900"
-    assert output["result"].metadata["reference_id"] == "REF-123"
+    assert session.phase == FilingPhase.SELECTING_BRAINTREE_CARD
+    assert session.selections["court_payment_account_id"] == "acct-1"
+    assert "Braintree payment cards" in output["result"].assistant_message

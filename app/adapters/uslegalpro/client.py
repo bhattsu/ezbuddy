@@ -193,6 +193,28 @@ class USLegalProClient:
         )
         return dict(response) if isinstance(response, dict) else {"items": response or []}
 
+    async def authorize_payment(
+        self,
+        *,
+        payment_account_id: str,
+        amount: str,
+        additional_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """POST {payment_domain}/payment/authorize to authorize an amount on a card."""
+        payload = [
+            {
+                "payment_account_id": payment_account_id,
+                "amount": amount,
+                "additional_info": additional_info or {},
+            }
+        ]
+        response = await self.post_json(
+            settings.USLEGALPRO_AUTHORIZE_PATH,
+            payload,
+            include_auth=False,
+        )
+        return dict(response) if isinstance(response, dict) else {"item": response}
+
     async def post_json(
         self,
         path: str,

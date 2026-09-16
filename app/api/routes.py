@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     auth,
+    case_type_costs,
     chatbot,
     conversations,
     court_form_questions,
@@ -65,6 +66,13 @@ all_routes.include_router(
     template_ingest.router,
     prefix="/api/templates",
     tags=["Template Ingest"],
+)
+
+# Case type filing costs (payment authorization amounts)
+all_routes.include_router(
+    case_type_costs.router,
+    prefix="/api/case-type-costs",
+    tags=["Case Type Costs"],
 )
 
 
