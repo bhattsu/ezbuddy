@@ -203,8 +203,14 @@ async def _catalog_rows_for_session(
 def _catalog_rows_for_selected_court(
     rows: List[Dict[str, str]],
     selections: Dict[str, Any],
+    *,
+    phase: Optional[FilingPhase] = None,
 ) -> List[Dict[str, str]]:
     """Filter cached catalog rows to the chosen court/category — no LLM."""
+    from app.agents.conversation.orchestration.flow_redirects import (
+        is_fresh_catalog_phase,
+    )
+
     j_code = str(selections.get("jurisdiction_code") or "").strip()
     if not j_code:
         return rows
@@ -212,8 +218,9 @@ def _catalog_rows_for_selected_court(
     c_code = str(selections.get("case_category_code") or "").strip()
     if c_code:
         court_rows = filter_court_category(court_rows, j_code, c_code)
+    skip_topic = phase is not None and is_fresh_catalog_phase(selections, phase)
     topic = str(selections.get("case_topic") or "").strip()
-    if topic:
+    if topic and not skip_topic:
         court_rows = search_catalog_rows(court_rows, topic)
     return court_rows
 
@@ -226,10 +233,17 @@ async def _scoped_catalog_rows(
     phase: Optional[FilingPhase] = None,
 ) -> List[Dict[str, str]]:
     """LLM court matching only for initial jurisdiction selection."""
+    from app.agents.conversation.orchestration.flow_redirects import (
+        is_fresh_catalog_phase,
+    )
+
     if selections.get("jurisdiction_code"):
-        return _catalog_rows_for_selected_court(rows, selections)
+        return _catalog_rows_for_selected_court(rows, selections, phase=phase)
 
     if phase is not None and phase != FilingPhase.SELECTING_JURISDICTION:
+        return rows
+
+    if phase is not None and is_fresh_catalog_phase(selections, phase):
         return rows
 
     topic = str(selections.get("case_topic") or "").strip()
@@ -478,7 +492,9 @@ async def load_db_options(
         if mode == FilingMode.FILING_NEW:
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
-                return category_options(_catalog_rows_for_selected_court(rows, selections))
+                return category_options(
+                    _catalog_rows_for_selected_court(rows, selections, phase=phase)
+                )
         url = selections.get("case_category_codes_url")
         if service and url:
             return await service.get_case_categories_from_jurisdiction_link(url)
@@ -487,7 +503,9 @@ async def load_db_options(
         if mode == FilingMode.FILING_NEW:
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
-                return case_type_options(_catalog_rows_for_selected_court(rows, selections))
+                return case_type_options(
+                    _catalog_rows_for_selected_court(rows, selections, phase=phase)
+                )
         url = selections.get("case_type_codes_url")
         if service and url:
             return await service.get_case_types_from_category_link(url)
@@ -875,6 +893,11 @@ def _phase_after_case_confirm(sel: Dict[str, Any]) -> "FilingPhase":
 
 
 def advance_phase_after_selections(session: FilingSession) -> None:
+    from app.agents.conversation.orchestration.flow_redirects import (
+        clear_fresh_catalog_on_selection,
+    )
+
+    clear_fresh_catalog_on_selection(session)
     sel = session.selections
     if session.phase == FilingPhase.SELECTING_STATE and sel.get("state_code"):
         session.phase = FilingPhase.INTENT_PENDING

@@ -45,6 +45,7 @@ PROCESS_TOASTS: Dict[str, tuple[str, NotificationLevel]] = {
     "questions_ready": ("Form questions are ready", "success"),
     "matching_workflow": ("Matching the case workflow", "info"),
     "collecting_workflow_answers": ("Collecting form answers", "info"),
+    "confirming_workflow_answers": ("Review your answers before document generation", "info"),
     "offering_documents": ("You can upload supporting documents", "info"),
     "awaiting_document_upload": ("Waiting for document upload", "info"),
     "analyzing_upload": ("Analyzing the uploaded document", "info"),
@@ -86,6 +87,7 @@ EVENT_KIND_PROCESS = {
     "efile.confirm": "confirming_efile",
     "case.located": "case_located",
     "workflow.complete": "collecting_workflow_answers",
+    "workflow.review": "confirming_workflow_answers",
     "error": "error",
 }
 
@@ -106,6 +108,7 @@ PHASE_LOADING_PROCESS: Dict[str, str] = {
     "selecting_document_type": "loading_document_types",
     "selecting_filing_type": "loading_filing_types",
     "collecting_workflow_answers": "loading_questions",
+    "confirming_workflow_answers": "confirming_workflow_answers",
     "offering_documents": "offering_documents",
     "awaiting_document_upload": "awaiting_document_upload",
     "generating_documents": "generating_documents",

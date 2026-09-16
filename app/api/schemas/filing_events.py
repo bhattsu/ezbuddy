@@ -35,6 +35,7 @@ class FilingPhase(str, Enum):
     OFFERING_DOCUMENTS = "offering_documents"
     AWAITING_DOCUMENT_UPLOAD = "awaiting_document_upload"
     COLLECTING_WORKFLOW_ANSWERS = "collecting_workflow_answers"
+    CONFIRMING_WORKFLOW_ANSWERS = "confirming_workflow_answers"
     GENERATING_DOCUMENTS = "generating_documents"
     VERIFYING_PLATFORM_PAYMENT = "verifying_platform_payment"
     VERIFYING_COURT_PAYMENT = "verifying_court_payment"

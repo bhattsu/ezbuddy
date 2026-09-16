@@ -14,6 +14,7 @@ from app.api.endpoints import (
     court_form_questions,
     court_rules,
     document_analysis,
+    folder_setup,
     idp_health,
     template_ingest,
 )
@@ -68,6 +69,13 @@ all_routes.include_router(
     tags=["Template Ingest"],
 )
 
+# Template folder setup (S3 state/jurisdiction folders + configuration.states)
+all_routes.include_router(
+    folder_setup.router,
+    prefix="/api/template-folders",
+    tags=["Template Folders"],
+)
+
 # Case type filing costs (payment authorization amounts)
 all_routes.include_router(
     case_type_costs.router,
@@ -113,6 +121,10 @@ async def root():
                 "states": "/api/templates/states",
                 "jurisdictions": "/api/templates/jurisdictions?state=TX",
                 "ingest": "/api/templates/ingest",
+            },
+            "template_folders": {
+                "create_state": "POST /api/template-folders/states",
+                "create_jurisdiction": "POST /api/template-folders/jurisdictions",
             },
         },
     }

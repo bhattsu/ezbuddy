@@ -1,15 +1,21 @@
 """Agentic flow redirect and fallback guidance."""
 
+import pytest
+
 from app.agents.conversation.orchestration.flow_redirects import (
     apply_flow_redirect,
     enrich_failure_with_guidance,
+    is_fresh_catalog_phase,
     looks_like_case_number_entry,
     reconcile_missed_jurisdiction_redirect,
     resolve_flow_redirect,
     sync_phase_after_court_change,
 )
-from app.agents.conversation.orchestration.state import FilingSession
+from app.agents.conversation.orchestration.helpers import (
+    _catalog_rows_for_selected_court,
+)
 from app.api.schemas.filing_events import FilingMode, FilingPhase
+from app.agents.conversation.orchestration.state import FilingSession
 
 
 def _existing_session(**selections) -> FilingSession:
@@ -255,6 +261,111 @@ def test_divorce_topic_change_restarts_court_selection():
     apply_flow_redirect(session, redirect)
     assert session.selections["case_topic"] == "divorce"
     assert "jurisdiction_code" not in session.selections
+
+
+def test_change_jurisdiction_marks_fresh_catalog_and_clears_topic_filters():
+    session = FilingSession(conversation_id="c1", user_id="u1")
+    session.mode = FilingMode.FILING_NEW
+    session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+    session.workflow_questions = [{"field_name": "q1", "label": "Question 1"}]
+    session.selections.update(
+        {
+            "state_code": "tx",
+            "case_topic": "divorce",
+            "matched_court_codes": ["harris:dc"],
+            "case_intent": {"case_topic": "divorce"},
+            "jurisdiction_code": "harris:dc",
+            "case_category_code": "131370",
+            "case_type_code": "16102",
+        }
+    )
+    redirect = resolve_flow_redirect(session, "I need to change court or jurisdiction")
+    assert redirect is not None
+    apply_flow_redirect(session, redirect)
+    assert session.phase == FilingPhase.SELECTING_JURISDICTION
+    assert is_fresh_catalog_phase(session.selections, FilingPhase.SELECTING_JURISDICTION)
+    assert "matched_court_codes" not in session.selections
+    assert "case_intent" not in session.selections
+    assert session.workflow_questions == []
+
+
+def test_change_category_marks_fresh_catalog_keeps_court():
+    session = FilingSession(conversation_id="c1", user_id="u1")
+    session.mode = FilingMode.FILING_NEW
+    session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+    session.selections.update(
+        {
+            "state_code": "tx",
+            "case_topic": "divorce",
+            "jurisdiction_code": "harris:dc",
+            "case_category_code": "131370",
+            "case_type_code": "16102",
+        }
+    )
+    redirect = resolve_flow_redirect(session, "change case category")
+    assert redirect.target_phase == FilingPhase.SELECTING_CASE_CATEGORY
+    apply_flow_redirect(session, redirect)
+    assert session.selections["jurisdiction_code"] == "harris:dc"
+    assert "case_category_code" not in session.selections
+    assert is_fresh_catalog_phase(session.selections, FilingPhase.SELECTING_CASE_CATEGORY)
+
+
+def test_fresh_catalog_skips_case_topic_filter_on_categories():
+    rows = [
+        {
+            "jurisdiction_code": "harris:dc",
+            "case_category_code": "cat-divorce",
+            "case_category_name": "Family - Divorce",
+            "case_type_code": "t1",
+            "case_type_name": "Divorce With Children",
+        },
+        {
+            "jurisdiction_code": "harris:dc",
+            "case_category_code": "cat-civil",
+            "case_category_name": "Civil",
+            "case_type_code": "t2",
+            "case_type_name": "Small Claims",
+        },
+    ]
+    selections = {
+        "jurisdiction_code": "harris:dc",
+        "case_topic": "divorce",
+        "_fresh_catalog_phase": FilingPhase.SELECTING_CASE_CATEGORY.value,
+    }
+    filtered = _catalog_rows_for_selected_court(
+        rows, selections, phase=FilingPhase.SELECTING_CASE_CATEGORY
+    )
+    categories = {row["case_category_code"] for row in filtered}
+    assert categories == {"cat-divorce", "cat-civil"}
+
+
+@pytest.mark.asyncio
+async def test_fresh_jurisdiction_skips_llm_scoping():
+    from app.agents.conversation.orchestration.helpers import _scoped_catalog_rows
+
+    rows = [
+        {
+            "jurisdiction_code": "harris:dc",
+            "jurisdiction_name": "Harris County",
+            "case_category_code": "cat1",
+            "case_type_name": "Divorce",
+        },
+        {
+            "jurisdiction_code": "dallas:dc",
+            "jurisdiction_name": "Dallas County",
+            "case_category_code": "cat2",
+            "case_type_name": "Small Claims",
+        },
+    ]
+    selections = {
+        "case_topic": "divorce",
+        "matched_court_codes": ["harris:dc"],
+        "_fresh_catalog_phase": FilingPhase.SELECTING_JURISDICTION.value,
+    }
+    scoped = await _scoped_catalog_rows(
+        rows, selections, bedrock=None, phase=FilingPhase.SELECTING_JURISDICTION
+    )
+    assert len(scoped) == 2
 
 
 def test_failure_guidance_sets_pending_redirect():

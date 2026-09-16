@@ -87,6 +87,7 @@ _MID_FLOW_TOPIC_PHASES = frozenset(
         FilingPhase.SELECTING_DOC_TYPE_CODE,
         FilingPhase.SELECTING_DOCUMENT_TYPE,
         FilingPhase.COLLECTING_WORKFLOW_ANSWERS,
+        FilingPhase.CONFIRMING_WORKFLOW_ANSWERS,
         FilingPhase.OFFERING_DOCUMENTS,
         FilingPhase.AWAITING_DOCUMENT_UPLOAD,
     }
@@ -148,6 +149,30 @@ _GO_TO_STEP_RE = re.compile(
 )
 
 _PENDING_KEY = "_pending_flow_redirect"
+_FRESH_CATALOG_PHASE_KEY = "_fresh_catalog_phase"
+_TOPIC_FILTER_KEYS = (
+    "matched_court_codes",
+    "matched_case_type_codes",
+    "case_intent",
+)
+_FRESH_CATALOG_LABELS = frozenset(
+    {
+        "change_court_new",
+        "change_court_existing",
+        "change_category",
+        "change_case_type",
+        "confirm_court_change",
+        "confirmed_redirect",
+    }
+)
+_FRESH_CATALOG_PHASES = frozenset(
+    {
+        FilingPhase.SELECTING_JURISDICTION,
+        FilingPhase.EXISTING_SELECTING_JURISDICTION,
+        FilingPhase.SELECTING_CASE_CATEGORY,
+        FilingPhase.SELECTING_CASE_TYPE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -409,6 +434,53 @@ def clear_pending_flow_redirect(session: FilingSession) -> None:
     session.selections.pop(_PENDING_KEY, None)
 
 
+def is_fresh_catalog_phase(selections: Dict[str, Any], phase: FilingPhase) -> bool:
+    """True when the user explicitly restarted this step and wants full lists."""
+    fresh = str(selections.get(_FRESH_CATALOG_PHASE_KEY) or "").strip().lower()
+    return fresh == phase.value.lower()
+
+
+def clear_fresh_catalog_on_selection(session: FilingSession) -> None:
+    """Drop the fresh-list flag once the user picks an option at that step."""
+    fresh = str(session.selections.get(_FRESH_CATALOG_PHASE_KEY) or "").strip().lower()
+    if not fresh:
+        return
+    sel = session.selections
+    if fresh == FilingPhase.SELECTING_JURISDICTION.value and sel.get("jurisdiction_code"):
+        session.selections.pop(_FRESH_CATALOG_PHASE_KEY, None)
+    elif fresh == FilingPhase.EXISTING_SELECTING_JURISDICTION.value and sel.get(
+        "jurisdiction_code"
+    ):
+        session.selections.pop(_FRESH_CATALOG_PHASE_KEY, None)
+    elif fresh == FilingPhase.SELECTING_CASE_CATEGORY.value and sel.get(
+        "case_category_code"
+    ):
+        session.selections.pop(_FRESH_CATALOG_PHASE_KEY, None)
+    elif fresh == FilingPhase.SELECTING_CASE_TYPE.value and sel.get("case_type_code"):
+        session.selections.pop(_FRESH_CATALOG_PHASE_KEY, None)
+
+
+def _mark_fresh_catalog_phase(session: FilingSession, redirect: FlowRedirect) -> None:
+    """Show unfiltered court/category/type lists after an explicit change request."""
+    if redirect.label == "change_case_topic":
+        session.selections.pop(_FRESH_CATALOG_PHASE_KEY, None)
+        return
+    label_ok = redirect.label in _FRESH_CATALOG_LABELS or redirect.label.startswith(
+        "go_to_"
+    )
+    if not label_ok:
+        return
+    if redirect.target_phase not in _FRESH_CATALOG_PHASES:
+        return
+    session.selections[_FRESH_CATALOG_PHASE_KEY] = redirect.target_phase.value
+    if redirect.target_phase in (
+        FilingPhase.SELECTING_JURISDICTION,
+        FilingPhase.EXISTING_SELECTING_JURISDICTION,
+    ):
+        for key in _TOPIC_FILTER_KEYS:
+            session.selections.pop(key, None)
+
+
 def apply_flow_redirect(session: FilingSession, redirect: FlowRedirect) -> str:
     """Move the session to ``redirect.target_phase`` and clear downstream data."""
     session.selections.pop(_PENDING_KEY, None)
@@ -416,6 +488,7 @@ def apply_flow_redirect(session: FilingSession, redirect: FlowRedirect) -> str:
     if redirect.clear_workflow:
         _reset_workflow_state(session)
     _clear_cached_option_lists(session)
+    _mark_fresh_catalog_phase(session, redirect)
     session.phase = redirect.target_phase
     return _redirect_message(session, redirect)
 
@@ -691,6 +764,7 @@ _NEW_JURISDICTION_AND_BELOW = [
     "selected_jurisdiction",
     "cached_jurisdictions",
     "case_category_codes_url",
+    *_TOPIC_FILTER_KEYS,
     *_NEW_CATEGORY_AND_BELOW,
 ]
 

@@ -222,6 +222,11 @@ def format_db_options_summary(
     return prefix + "\n" + "\n".join(f"- {label}" for label in shown)
 
 
+def _fresh_catalog_step(selections: Dict[str, Any], phase_key: str) -> bool:
+    fresh = str(selections.get("_fresh_catalog_phase") or "").strip().lower()
+    return bool(fresh) and fresh == phase_key
+
+
 def build_phase_selection_message(
     phase: str,
     selections: Dict[str, Any],
@@ -232,13 +237,19 @@ def build_phase_selection_message(
     noun = _PHASE_NOUNS.get(phase_key)
     if not noun:
         return None
+    fresh_step = _fresh_catalog_step(selections, phase_key)
     if not labels:
         topic = str(selections.get("case_topic") or "").strip()
-        if topic and phase_key in {
-            "selecting_jurisdiction",
-            "selecting_case_category",
-            "selecting_case_type",
-        }:
+        if (
+            topic
+            and not fresh_step
+            and phase_key
+            in {
+                "selecting_jurisdiction",
+                "selecting_case_category",
+                "selecting_case_type",
+            }
+        ):
             return (
                 f"I couldn't find any {noun} options for {topic} in the selected state. "
                 "Please describe the case type in different words, or mention your county."
@@ -249,11 +260,16 @@ def build_phase_selection_message(
     if phase_key in DROPDOWN_PHASES:
         topic = str(selections.get("case_topic") or "").strip()
         topic_prefix = ""
-        if topic and phase_key in {
-            "selecting_jurisdiction",
-            "selecting_case_category",
-            "selecting_case_type",
-        }:
+        if (
+            topic
+            and not fresh_step
+            and phase_key
+            in {
+                "selecting_jurisdiction",
+                "selecting_case_category",
+                "selecting_case_type",
+            }
+        ):
             topic_prefix = f"These options match {topic}. "
         if len(labels) == 1:
             return f"{topic_prefix}Please select the {noun}: {labels[0]}"

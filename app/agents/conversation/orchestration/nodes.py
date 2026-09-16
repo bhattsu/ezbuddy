@@ -49,6 +49,14 @@ from app.agents.conversation.orchestration.helpers import (
 from app.agents.conversation.orchestration.detail_corrections import (
     apply_chat_detail_corrections,
     correction_summary,
+    looks_like_detail_correction,
+)
+from app.agents.conversation.orchestration.workflow_review import (
+    begin_workflow_review,
+    format_workflow_review_message,
+    looks_like_proceed_to_generation,
+    looks_like_review_decline,
+    review_decline_message,
 )
 from app.agents.conversation.orchestration.flow_redirects import (
     apply_flow_redirect,
@@ -1613,15 +1621,182 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             "next_node": "offer_documents",
         }
 
+    async def _handle_workflow_review_turn(
+        state: FilingGraphState,
+        session: FilingSession,
+        user_message: str,
+    ) -> FilingGraphState:
+        await ctx.notify("confirming_workflow_answers")
+        correction_fields = apply_chat_detail_corrections(session, user_message)
+        if correction_fields:
+            sync_checklist_from_answers(session)
+
+        if looks_like_review_decline(user_message):
+            assistant_message = review_decline_message()
+            await persist_system_state(ctx.conversation_repo, session)
+            result = OrchestratorResult(
+                assistant_message=sanitize_assistant_text(assistant_message),
+                conversation_id=session.conversation_id,
+                phase=session.phase,
+                mode=session.mode,
+                selections=session.selections,
+                collected_answers=session.collected_answers,
+                checklist=session.checklist.to_payload(),
+                event_kind="workflow.review",
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
+
+        wants_proceed = looks_like_proceed_to_generation(user_message)
+        if wants_proceed and not looks_like_detail_correction(user_message):
+            if workflow_is_complete(session):
+                session.phase = FilingPhase.GENERATING_DOCUMENTS
+                await persist_system_state(ctx.conversation_repo, session)
+                return {
+                    **state,
+                    "phase": session.phase.value,
+                    "next_node": "generate_documents",
+                }
+
+        if correction_fields and workflow_is_complete(session):
+            note = correction_summary(correction_fields, session) or "I updated your details."
+            assistant_message = format_workflow_review_message(session, intro=note)
+            begin_workflow_review(session)
+            await persist_system_state(ctx.conversation_repo, session)
+            result = OrchestratorResult(
+                assistant_message=sanitize_assistant_text(assistant_message),
+                conversation_id=session.conversation_id,
+                phase=session.phase,
+                mode=session.mode,
+                selections=session.selections,
+                collected_answers=session.collected_answers,
+                checklist=session.checklist.to_payload(),
+                event_kind="workflow.review",
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
+
+        session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
+        history = history_for_llm(session, state.get("history") or [])
+        next_q = next_pending_question(session)
+        from_template = bool(session.selections.get("template_questions_ready"))
+        if from_template:
+            pending_batch = compact_form_questions(
+                list_all_pending_questions(
+                    checklist_items=session.checklist.items,
+                    workflow_questions=session.workflow_questions,
+                    collected_answers=session.collected_answers,
+                )
+            )
+        else:
+            pending_batch = batch_pending_questions(
+                checklist_items=session.checklist.items,
+                workflow_questions=session.workflow_questions,
+                collected_answers=session.collected_answers,
+            )
+        llm_out = await ctx.workflow_agent.run(
+            selections=session.selections,
+            workflow_questions=session.workflow_questions,
+            checklist=session.checklist.to_payload().model_dump(),
+            collected_answers=session.collected_answers,
+            pending_questions_batch=pending_batch,
+            next_pending_question=next_q,
+            history=history,
+            user_message=user_message,
+        )
+        known_fields: set[str] = set()
+        for q in session.workflow_questions:
+            name = str(q.get("field_name") or "").strip()
+            if name:
+                known_fields.add(name)
+        recorded = {
+            key: val
+            for key, val in (llm_out.get("answers_update") or {}).items()
+            if key in known_fields
+        }
+        for key, val in recorded.items():
+            session.collected_answers[key] = val
+        from app.services.workflow_question_consolidation_service import (
+            propagate_cluster_answers,
+        )
+
+        propagate_cluster_answers(session)
+        merge_checklist_updates(session, llm_out.get("checklist_updates") or [])
+        sync_checklist_from_answers(session)
+
+        if workflow_is_complete(session):
+            begin_workflow_review(session)
+            note = correction_summary(correction_fields, session)
+            assistant_message = format_workflow_review_message(
+                session,
+                intro=note or str(llm_out.get("assistant_message") or "").strip(),
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            result = OrchestratorResult(
+                assistant_message=sanitize_assistant_text(assistant_message),
+                conversation_id=session.conversation_id,
+                phase=session.phase,
+                mode=session.mode,
+                selections=session.selections,
+                collected_answers=session.collected_answers,
+                checklist=session.checklist.to_payload(),
+                event_kind="workflow.review",
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
+
+        assistant_message = str(llm_out.get("assistant_message") or "").strip()
+        note = correction_summary(correction_fields, session)
+        if note and note.lower() not in assistant_message.lower():
+            assistant_message = f"{note} {assistant_message}".strip()
+        if not assistant_message and next_pending_question(session):
+            leftover = next_pending_question(session)
+            assistant_message = str(
+                leftover.get("field_label")
+                or leftover.get("field_name")
+                or "Please provide the next detail for the form."
+            )
+        await persist_system_state(ctx.conversation_repo, session)
+        result = OrchestratorResult(
+            assistant_message=assistant_message,
+            conversation_id=session.conversation_id,
+            phase=session.phase,
+            mode=session.mode,
+            selections=session.selections,
+            collected_answers=session.collected_answers,
+            checklist=session.checklist.to_payload(),
+        )
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
     async def workflow_node(state: FilingGraphState) -> FilingGraphState:
         cid = state["conversation_id"]
         session = FilingSessionManager.get(cid)
         if not session:
             raise RuntimeError(f"No session for conversation {cid}")
 
+        user_message = state.get("user_message") or ""
+        if session.phase == FilingPhase.CONFIRMING_WORKFLOW_ANSWERS:
+            return await _handle_workflow_review_turn(state, session, user_message)
+
         await ctx.notify("collecting_workflow_answers")
         history = history_for_llm(session, state.get("history") or [])
-        user_message = state.get("user_message") or ""
         entered_from_offer = session.phase in (
             FilingPhase.OFFERING_DOCUMENTS,
             FilingPhase.AWAITING_DOCUMENT_UPLOAD,
@@ -1734,12 +1909,25 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "next_node": "persist",
             }
         if complete:
-            session.phase = FilingPhase.GENERATING_DOCUMENTS
+            begin_workflow_review(session)
+            await ctx.notify("confirming_workflow_answers")
+            review_message = format_workflow_review_message(session)
             await persist_system_state(ctx.conversation_repo, session)
+            result = OrchestratorResult(
+                assistant_message=sanitize_assistant_text(review_message),
+                conversation_id=session.conversation_id,
+                phase=session.phase,
+                mode=session.mode,
+                selections=session.selections,
+                collected_answers=session.collected_answers,
+                checklist=session.checklist.to_payload(),
+                event_kind="workflow.review",
+            )
             return {
                 **state,
                 "phase": session.phase.value,
-                "next_node": "generate_documents",
+                "result": result,
+                "next_node": "persist",
             }
 
         assistant_message = str(llm_out.get("assistant_message") or "").strip()

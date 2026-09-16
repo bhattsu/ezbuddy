@@ -197,22 +197,44 @@ class S3Manager:
             logger.error(f"Failed to generate presigned URL: {str(e)}")
             raise RuntimeError(f"Presigned URL generation failed: {str(e)}")
     
-    async def file_exists(self, s3_key: str) -> bool:
-        """Check if file exists in S3"""
-        
+    async def file_exists(self, s3_key: str, *, bucket: Optional[str] = None) -> bool:
+        """Check if an object exists in S3."""
+        target_bucket = bucket or self.bucket_name
+        if not target_bucket:
+            return False
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
                 lambda: self.s3_client.head_object(
-                    Bucket=self.bucket_name,
-                    Key=s3_key
-                )
+                    Bucket=target_bucket,
+                    Key=s3_key,
+                ),
             )
             return True
-            
-        except:
+        except Exception:
             return False
+
+    async def ensure_folder_marker(
+        self,
+        folder_prefix: str,
+        *,
+        bucket: Optional[str] = None,
+    ) -> tuple[str, bool]:
+        """Ensure a virtual S3 folder exists by writing a ``.keep`` marker object."""
+        normalized = str(folder_prefix or "").strip("/")
+        if not normalized:
+            raise RuntimeError("folder_prefix is required")
+        marker_key = f"{normalized}/.keep"
+        if await self.file_exists(marker_key, bucket=bucket):
+            return marker_key, False
+        await self.upload_bytes_at_key(
+            b"",
+            marker_key,
+            bucket=bucket,
+            content_type="application/octet-stream",
+        )
+        return marker_key, True
     
     async def cleanup_old_files(self, days: int = None):
         """Delete files older than specified days"""

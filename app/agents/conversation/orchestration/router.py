@@ -41,7 +41,10 @@ def route_after_message_prepare(
         if looks_like_detail_correction(user_message):
             return "workflow"
         return "offer_documents"
-    if phase == FilingPhase.COLLECTING_WORKFLOW_ANSWERS.value:
+    if phase in {
+        FilingPhase.COLLECTING_WORKFLOW_ANSWERS.value,
+        FilingPhase.CONFIRMING_WORKFLOW_ANSWERS.value,
+    }:
         if looks_like_flow_redirect(user_message) and not looks_like_detail_correction(
             user_message
         ):
