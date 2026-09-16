@@ -55,7 +55,7 @@ from app.agents.conversation.orchestration.flow_redirects import (
     clear_pending_flow_redirect,
     enrich_failure_with_guidance,
     looks_like_case_number_entry,
-    reconcile_missed_jurisdiction_redirect,
+    reconcile_missed_flow_redirect,
     resolve_flow_redirect,
     sync_phase_after_court_change,
 )
@@ -1464,7 +1464,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 "next_node": "persist",
             }
 
-        reconcile_msg = reconcile_missed_jurisdiction_redirect(
+        reconcile_msg = reconcile_missed_flow_redirect(
             session,
             user_message,
             assistant_message=assistant_message,
@@ -1485,7 +1485,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             )
             assistant_message = sanitize_assistant_text(built or reconcile_msg)
             logger.info(
-                "Reconciled missed jurisdiction redirect phase=%s options=%s",
+                "Reconciled missed flow redirect phase=%s options=%s",
                 session.phase.value,
                 len(response_options_override),
             )

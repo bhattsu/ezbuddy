@@ -25,8 +25,10 @@ from app.services.court_catalog import (
     filter_court,
     filter_court_category,
     get_court_catalog,
+    infer_case_topic,
     jurisdiction_options,
     match_jurisdiction_from_text,
+    normalize_catalog_text,
     search_catalog_rows,
 )
 from app.adapters.llm.bedrock import Bedrock
@@ -240,6 +242,24 @@ async def _scoped_catalog_rows(
     return await service.filter_catalog_rows(rows, selections)
 
 
+_REDIRECT_TOPIC_SUFFIX_RE = re.compile(
+    r"\b(?:for|to\s+file)\s+(?:a|an\s+)?(.+)\s*$",
+    re.I,
+)
+_BLOCKED_CASE_TOPICS = frozenset(
+    {
+        "jurisdiction",
+        "jurisdiction change",
+        "change jurisdiction",
+        "party type",
+        "case type",
+        "filing code",
+        "document type",
+        "court",
+    }
+)
+
+
 async def capture_new_case_topic(
     session: FilingSession,
     user_message: str,
@@ -259,6 +279,23 @@ async def capture_new_case_topic(
         and not session.selections.get("jurisdiction_code")
     )
     if not should_capture:
+        return
+
+    from app.agents.conversation.orchestration.flow_redirects import (
+        looks_like_flow_redirect,
+    )
+
+    if looks_like_flow_redirect(message):
+        suffix = _REDIRECT_TOPIC_SUFFIX_RE.search(message)
+        if suffix:
+            topic = infer_case_topic(suffix.group(1))
+            topic_key = normalize_catalog_text(topic)
+            if topic and len(topic) >= 3 and topic_key not in _BLOCKED_CASE_TOPICS:
+                prior_topic = str(session.selections.get("case_topic") or "")
+                if topic != prior_topic:
+                    session.selections.pop("matched_court_codes", None)
+                    session.selections.pop("matched_case_type_codes", None)
+                session.selections["case_topic"] = topic
         return
 
     from app.services.court_catalog_filter_service import CourtCatalogFilterService

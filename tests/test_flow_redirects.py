@@ -118,6 +118,31 @@ def test_reconcile_missed_jurisdiction_redirect_after_llm_reply():
     assert "filing_code" not in session.selections
 
 
+def test_change_party_type_redirects_from_filing_code():
+    session = FilingSession(conversation_id="c1", user_id="u1")
+    session.mode = FilingMode.FILING_NEW
+    session.phase = FilingPhase.SELECTING_FILING_CODE
+    session.selections.update(
+        {
+            "state_code": "tx",
+            "case_topic": "divorce",
+            "jurisdiction_code": "harris:dc",
+            "case_type_code": "209421",
+            "party_type_code": "53024",
+            "filing_code": "petition",
+            "filing_codes_url": "http://example/filing-codes",
+        }
+    )
+    redirect = resolve_flow_redirect(session, "i need to change party type")
+    assert redirect is not None
+    assert redirect.target_phase == FilingPhase.SELECTING_CASE_PARTIES
+    apply_flow_redirect(session, redirect)
+    assert session.phase == FilingPhase.SELECTING_CASE_PARTIES
+    assert "party_type_code" not in session.selections
+    assert "filing_code" not in session.selections
+    assert session.selections["case_type_code"] == "209421"
+
+
 def test_change_the_jurisdiction_redirects():
     session = FilingSession(conversation_id="c1", user_id="u1")
     session.mode = FilingMode.FILING_NEW

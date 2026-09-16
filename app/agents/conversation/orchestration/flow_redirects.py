@@ -99,6 +99,11 @@ _CASE_TYPE_RE = re.compile(
     r"\b(?:change|select|choose|pick|switch|different|another)\s+(?:the\s+)?case\s+type\b",
     re.I,
 )
+_PARTY_TYPE_RE = re.compile(
+    r"\b(?:change|select|choose|pick|switch|different|another)\s+(?:the\s+)?party(?:\s+type)?\b"
+    r"|\b(?:need|want)\s+to\s+change\s+(?:the\s+)?party(?:\s+type)?\b",
+    re.I,
+)
 _STATE_RE = re.compile(
     r"\b(?:change|select|choose|switch|different|another)\s+(?:the\s+)?state\b",
     re.I,
@@ -171,6 +176,7 @@ def looks_like_flow_redirect(text: str) -> bool:
         or _JURISDICTION_CHANGE_LOOSE.search(raw)
         or _CATEGORY_RE.search(raw)
         or _CASE_TYPE_RE.search(raw)
+        or _PARTY_TYPE_RE.search(raw)
         or _STATE_RE.search(raw)
         or _FILING_CODE_RE.search(raw)
         or _DOC_TYPE_RE.search(raw)
@@ -247,6 +253,12 @@ def resolve_flow_redirect(
             target_phase=FilingPhase.SELECTING_CASE_TYPE,
             clear_workflow=True,
             label="change_case_type",
+        )
+    if _PARTY_TYPE_RE.search(raw):
+        return FlowRedirect(
+            target_phase=FilingPhase.SELECTING_CASE_PARTIES,
+            clear_workflow=True,
+            label="change_party_type",
         )
     if _FILING_CODE_RE.search(raw):
         return FlowRedirect(
@@ -408,6 +420,30 @@ def apply_flow_redirect(session: FilingSession, redirect: FlowRedirect) -> str:
     return _redirect_message(session, redirect)
 
 
+def reconcile_missed_flow_redirect(
+    session: FilingSession,
+    user_message: str,
+    *,
+    assistant_message: str = "",
+) -> Optional[str]:
+    """Apply a step redirect when the LLM replied but phase/options were not reset."""
+    jurisdiction_msg = reconcile_missed_jurisdiction_redirect(
+        session, user_message, assistant_message=assistant_message
+    )
+    if jurisdiction_msg:
+        return jurisdiction_msg
+    redirect = resolve_flow_redirect(
+        session, user_message, last_assistant_message=assistant_message
+    )
+    if not redirect:
+        return None
+    if session.phase == redirect.target_phase:
+        if redirect.label == "change_party_type" and session.selections.get("filing_code"):
+            return apply_flow_redirect(session, redirect)
+        return None
+    return apply_flow_redirect(session, redirect)
+
+
 def reconcile_missed_jurisdiction_redirect(
     session: FilingSession,
     user_message: str,
@@ -535,6 +571,8 @@ def _keys_to_clear(mode: FilingMode, target: FilingPhase) -> List[str]:
             keys.extend(_NEW_CATEGORY_AND_BELOW)
         elif target == FilingPhase.SELECTING_CASE_TYPE:
             keys.extend(_NEW_CASE_TYPE_AND_BELOW)
+        elif target == FilingPhase.SELECTING_CASE_PARTIES:
+            keys.extend(_NEW_PARTY_AND_BELOW)
         elif target == FilingPhase.SELECTING_FILING_CODE:
             keys.extend(_NEW_FILING_CODE_AND_BELOW)
         elif target == FilingPhase.SELECTING_DOCUMENT_TYPE:
@@ -616,6 +654,15 @@ _NEW_FILING_CODE_AND_BELOW = [
     *_TEMPLATE_AND_BELOW,
 ]
 
+_NEW_PARTY_AND_BELOW = [
+    "party_type_code",
+    "party_type_name",
+    "selected_party_type",
+    "case_parties",
+    "parties_complete",
+    *_NEW_FILING_CODE_AND_BELOW,
+]
+
 _NEW_CASE_TYPE_AND_BELOW = [
     "case_type_code",
     "case_type_name",
@@ -684,6 +731,9 @@ def _redirect_message(session: FilingSession, redirect: FlowRedirect) -> str:
     if phase == FilingPhase.SELECTING_CASE_TYPE:
         category = sel.get("case_category_name") or sel.get("case_category_code") or "your category"
         return f"Understood. Please select the case type under {category}."
+    if phase == FilingPhase.SELECTING_CASE_PARTIES:
+        case_type = sel.get("case_type_name") or sel.get("case_type_code") or "your case type"
+        return f"Understood. Please select the party type for {case_type}."
     if phase == FilingPhase.EXISTING_ENTER_CASE_NUMBER:
         court = sel.get("jurisdiction_name") or sel.get("jurisdiction_code") or "the selected court"
         return f"Understood. Please enter the existing case number for {court}."
