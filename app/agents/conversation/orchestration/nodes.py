@@ -29,6 +29,8 @@ from app.agents.conversation.orchestration.helpers import (
     format_existing_case_api_error,
     get_session,
     handle_lookup,
+    strict_dropdown_intake,
+    try_strict_intent_selection,
     init_workflow_phase,
     is_affirmative_reply,
     is_new_filing_prefill_phase,
@@ -955,15 +957,17 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 redirect.target_phase.value,
             )
 
-        await capture_new_case_topic(
-            session,
-            user_message,
-            bedrock=ctx.bedrock,
-            history=history,
-        )
-        await apply_catalog_court_from_text(
-            ctx.filing_repo, session, user_message, bedrock=ctx.bedrock
-        )
+        strict_intake = strict_dropdown_intake(session)
+        if not strict_intake:
+            await capture_new_case_topic(
+                session,
+                user_message,
+                bedrock=ctx.bedrock,
+                history=history,
+            )
+            await apply_catalog_court_from_text(
+                ctx.filing_repo, session, user_message, bedrock=ctx.bedrock
+            )
 
         db_options = await load_db_options(
             ctx.filing_repo,
@@ -971,7 +975,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             session.selections,
             codes_service=ctx.codes_service,
             mode=session.mode,
-            bedrock=ctx.bedrock,
+            bedrock=None if strict_intake else ctx.bedrock,
             auth_token=session_auth_token or None,
         )
         cache_phase_options(session, session.phase, db_options)
@@ -1049,47 +1053,75 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 candidate_message = _format_candidate_message(candidates)
                 response_options_override = candidates
 
+        if (
+            strict_intake
+            and session.phase == FilingPhase.INTENT_PENDING
+            and user_message.strip()
+            and user_message != GREETING_USER_MESSAGE
+            and not matched_locally
+        ):
+            if try_strict_intent_selection(session, user_message):
+                matched_locally = True
+            else:
+                candidate_message = (
+                    "Please choose New case or Existing case from the dropdown."
+                )
+
+        skip_nav_llm = strict_intake and session.phase in (
+            FilingPhase.SELECTING_STATE,
+            FilingPhase.INTENT_PENDING,
+            *SELECTION_PHASES,
+        )
+
         if not matched_locally and not candidate_message:
-            await ctx.notify("processing_request")
-            llm_out = await ctx.nav_agent.run(
-                mode=session.mode.value,
-                phase=session.phase.value,
-                selections=session.selections,
-                db_options=db_options,
-                history=history,
-                user_message=user_message,
-            )
-
-            intent = str(llm_out.get("intent") or "continue")
-            lookup_action_from_llm = str(llm_out.get("lookup_action") or "")
-            if lookup_action_from_llm != "check_status" and (
-                session.mode == FilingMode.UNSET
-                or intent in (
-                    "filing_new",
-                    "filing_existing",
-                    "generic_legal",
+            if skip_nav_llm:
+                built = build_phase_selection_message(
+                    session.phase.value, session.selections, db_options
                 )
-            ):
-                advance_mode_from_intent(session, intent)
-            await capture_new_case_topic(
-                session,
-                user_message,
-                bedrock=ctx.bedrock,
-                history=history,
-            )
-
-            raw_update = llm_out.get("selections_update") or {}
-            if raw_update.get("case_topic"):
-                session.selections["case_topic"] = raw_update["case_topic"]
-            validated = filter_selections_update(
-                session.phase.value, raw_update, db_options
-            )
-            if raw_update and not validated and not raw_update.get("case_topic"):
-                logger.warning(
-                    "Dropped selections_update not in db_options: %s phase=%s",
-                    raw_update,
-                    session.phase.value,
+                candidate_message = built or (
+                    "Please select an option from the dropdown for this step."
                 )
+            else:
+                await ctx.notify("processing_request")
+                llm_out = await ctx.nav_agent.run(
+                    mode=session.mode.value,
+                    phase=session.phase.value,
+                    selections=session.selections,
+                    db_options=db_options,
+                    history=history,
+                    user_message=user_message,
+                )
+
+                intent = str(llm_out.get("intent") or "continue")
+                lookup_action_from_llm = str(llm_out.get("lookup_action") or "")
+                if lookup_action_from_llm != "check_status" and (
+                    session.mode == FilingMode.UNSET
+                    or intent in (
+                        "filing_new",
+                        "filing_existing",
+                        "generic_legal",
+                    )
+                ):
+                    advance_mode_from_intent(session, intent)
+                await capture_new_case_topic(
+                    session,
+                    user_message,
+                    bedrock=ctx.bedrock,
+                    history=history,
+                )
+
+                raw_update = llm_out.get("selections_update") or {}
+                if raw_update.get("case_topic"):
+                    session.selections["case_topic"] = raw_update["case_topic"]
+                validated = filter_selections_update(
+                    session.phase.value, raw_update, db_options
+                )
+                if raw_update and not validated and not raw_update.get("case_topic"):
+                    logger.warning(
+                        "Dropped selections_update not in db_options: %s phase=%s",
+                        raw_update,
+                        session.phase.value,
+                    )
 
         # Party append: accumulate parties list from validated "party" key
         _append_party_to_session(session, validated)

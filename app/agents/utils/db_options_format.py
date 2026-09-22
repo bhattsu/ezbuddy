@@ -9,6 +9,28 @@ MAX_PROMPT_OPTIONS = 60
 MAX_LISTED_OPTIONS = 40
 _HEAVY_KEYS = frozenset({"raw", "links", "field_mapping"})
 
+_LLM_SELECTION_OMIT_KEYS = frozenset(
+    {
+        "extracted_form_questions",
+        "extracted_form_text",
+        "matched_court_codes",
+        "case_intent",
+    }
+)
+
+
+def slim_selections_for_llm(selections: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop cached catalog lists and heavy blobs before navigation LLM prompts."""
+    slim: Dict[str, Any] = {}
+    for key, value in (selections or {}).items():
+        if key in _LLM_SELECTION_OMIT_KEYS or str(key).startswith("cached_"):
+            continue
+        if str(key).startswith("selected_") and isinstance(value, dict):
+            continue
+        slim[key] = value
+    return slim
+
+
 DROPDOWN_PHASES = frozenset(
     {
         "selecting_state",

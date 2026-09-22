@@ -14,6 +14,7 @@ from app.api.endpoints import (
     court_form_questions,
     court_rules,
     document_analysis,
+    filing_flow,
     folder_setup,
     idp_health,
     template_ingest,
@@ -30,6 +31,13 @@ all_routes.include_router(
 
 # Filing chat WebSocket lives on this router (/chatbot/ws)
 all_routes.include_router(chatbot.router, prefix="/chatbot", tags=["Chatbot"])
+
+# Deterministic dropdown intake until form questions (no LLM navigation)
+all_routes.include_router(
+    filing_flow.router,
+    prefix="/api/filing-flow",
+    tags=["Filing Flow"],
+)
 
 # Platform login (US Legal Pro)
 all_routes.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -107,6 +115,11 @@ async def root():
                 "login": "/auth/login",
                 "websocket": "/chatbot/ws",
                 "test_ui": "chatbot_test.html (project root — open in browser)",
+            },
+            "filing_flow": {
+                "create_session": "POST /api/filing-flow/sessions",
+                "current_step": "GET /api/filing-flow/sessions/{conversation_id}",
+                "select": "POST /api/filing-flow/sessions/{conversation_id}/select",
             },
             "conversations": {
                 "user_messages": "/api/conversations/user-messages",

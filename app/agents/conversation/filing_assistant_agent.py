@@ -11,6 +11,7 @@ from app.agents.conversation.schemas.filing_llm_schemas import FilingNavigationO
 from app.agents.utils.db_options_format import (
     compact_db_options,
     format_db_options_summary,
+    slim_selections_for_llm,
 )
 from app.agents.utils.json_utils import parse_llm_json
 from app.agents.utils.text_sanitize import sanitize_assistant_text
@@ -43,7 +44,9 @@ class FilingAssistantAgent:
             FILING_ASSISTANT_PROMPT,
             mode=mode,
             phase=phase,
-            selections_json=json.dumps(selections, default=str),
+            selections_json=json.dumps(
+                slim_selections_for_llm(selections), default=str
+            ),
             db_options_json=json.dumps(compact_db_options(db_options), default=str),
             options_summary=format_db_options_summary(phase, db_options),
             history_text=FilingAssistantAgent._format_history(history),

@@ -124,6 +124,13 @@ class Settings(BaseSettings):
         description="Document analysis API URL",
     )
     CHATBOT_WS_ENABLED: bool = Field(default=True)
+    FILING_STRICT_DROPDOWN_INTAKE: bool = Field(
+        default=True,
+        description=(
+            "Until form questions are extracted: new-case intake uses dropdown codes only — "
+            "no navigation/court-match/case-intent LLM and no catalog batches sent to Bedrock."
+        ),
+    )
 
     # ============== US Legal Pro external API (codes / dropdowns) ==============
     USLEGALPRO_API_BASE_URL: str = Field(

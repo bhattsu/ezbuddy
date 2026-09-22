@@ -134,6 +134,11 @@ class CourtCatalogFilterService:
         selections: Optional[Dict[str, Any]] = None,
         history: Optional[Sequence[Dict[str, str]]] = None,
     ) -> CaseIntentOutput:
+        from app.config.settings import get_settings
+
+        if get_settings().FILING_STRICT_DROPDOWN_INTAKE:
+            return CaseIntentOutput()
+
         message = str(user_message or "").strip()
         if not message:
             return CaseIntentOutput()
@@ -193,7 +198,9 @@ class CourtCatalogFilterService:
         if not summaries:
             return []
 
-        if self.bedrock is None:
+        from app.config.settings import get_settings
+
+        if get_settings().FILING_STRICT_DROPDOWN_INTAKE or self.bedrock is None:
             return keyword_match_court_codes(rows, topic)
 
         allowed = {court["code"] for court in summaries}

@@ -281,6 +281,8 @@ async def capture_new_case_topic(
     bedrock: Optional[Bedrock] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> None:
+    if strict_dropdown_intake(session):
+        return
     message = str(user_message or "").strip()
     if not message:
         return
@@ -336,6 +338,8 @@ async def apply_catalog_court_from_text(
     bedrock: Optional[Bedrock] = None,
 ) -> None:
     """If the user named a unique court in natural language, store its code."""
+    if strict_dropdown_intake(session):
+        return
     if session.mode != FilingMode.FILING_NEW:
         return
     if session.phase not in (
@@ -1246,6 +1250,69 @@ def result_from_session(
         metadata=meta,
         analysis=analysis,
     )
+
+
+_STRICT_INTAKE_LATE_PHASES = frozenset(
+    {
+        FilingPhase.OFFERING_DOCUMENTS,
+        FilingPhase.AWAITING_DOCUMENT_UPLOAD,
+        FilingPhase.COLLECTING_WORKFLOW_ANSWERS,
+        FilingPhase.CONFIRMING_WORKFLOW_ANSWERS,
+        FilingPhase.GENERATING_DOCUMENTS,
+        FilingPhase.COMPLETE,
+    }
+)
+
+def strict_dropdown_intake(session: FilingSession) -> bool:
+    """New-case path before template questions: dropdown codes only, no intake LLM."""
+    from app.config.settings import get_settings
+
+    if not get_settings().FILING_STRICT_DROPDOWN_INTAKE:
+        return False
+    if session.selections.get("template_questions_ready"):
+        return False
+    if session.mode in (FilingMode.FILING_EXISTING, FilingMode.GENERIC):
+        return False
+    if session.phase in _STRICT_INTAKE_LATE_PHASES:
+        return False
+    if session.mode == FilingMode.FILING_NEW:
+        return True
+    if session.mode != FilingMode.UNSET:
+        return False
+    return session.phase in (
+        FilingPhase.GREETING,
+        FilingPhase.SELECTING_STATE,
+        FilingPhase.INTENT_PENDING,
+        FilingPhase.SELECTING_COUNTY,
+        FilingPhase.SELECTING_JURISDICTION,
+        FilingPhase.SELECTING_CASE_CATEGORY,
+        FilingPhase.SELECTING_CASE_TYPE,
+        FilingPhase.SELECTING_CASE_PARTIES,
+        FilingPhase.SELECTING_FILER_TYPE,
+        FilingPhase.SELECTING_FILING_CODE,
+        FilingPhase.SELECTING_DOC_TYPE_CODE,
+        FilingPhase.SELECTING_DOCUMENT_TYPE,
+        FilingPhase.SELECTING_FILING_TYPE,
+    )
+
+
+_STRICT_INTENT_OPTIONS: List[Dict[str, str]] = [
+    {"code": "filing_new", "name": "Start a new case filing"},
+    {"code": "filing_existing", "name": "File into an existing case"},
+]
+
+
+def try_strict_intent_selection(session: FilingSession, user_message: str) -> bool:
+    from app.agents.utils.db_options_format import match_option
+
+    match, _ = match_option(_STRICT_INTENT_OPTIONS, user_message)
+    if not match:
+        return False
+    code = str(match.get("code") or "").strip()
+    if code not in {"filing_new", "filing_existing"}:
+        return False
+    advance_mode_from_intent(session, code)
+    return True
 
 
 def get_session(conversation_id: str, user_id: str) -> FilingSession:
