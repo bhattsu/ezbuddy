@@ -120,6 +120,7 @@ async def root():
                 "create_session": "POST /api/filing-flow/sessions",
                 "current_step": "GET /api/filing-flow/sessions/{conversation_id}",
                 "select": "POST /api/filing-flow/sessions/{conversation_id}/select",
+                "guide": "POST /api/filing-flow/sessions/{conversation_id}/guide",
             },
             "conversations": {
                 "user_messages": "/api/conversations/user-messages",

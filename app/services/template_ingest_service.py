@@ -151,6 +151,7 @@ class TemplateIngestService:
         case_subtype: str = "",
         field_mapping: str = "",
         sample_input: str = "",
+        questions: str = "",
         effective_from: Optional[date] = None,
         effective_to: Optional[date] = None,
     ) -> Dict[str, Any]:
@@ -213,6 +214,7 @@ class TemplateIngestService:
                 case_subtype or None,
                 field_mapping or None,
                 sample_input or None,
+                questions or None,
             )
             version_row = await self.rds.fetch_one(
                 SQL_INSERT_VERSION,

@@ -37,3 +37,11 @@ class FilingFlowStepResponse(BaseModel):
 
 class FilingFlowSessionCreatedResponse(FilingFlowStepResponse):
     pass
+
+
+class FilingFlowGuideRequest(BaseModel):
+    question: str = Field(..., description="User question about the current filing step")
+
+
+class FilingFlowGuideResponse(FilingFlowStepResponse):
+    guide: str = Field(default="", description="Flow help reply (same as message)")

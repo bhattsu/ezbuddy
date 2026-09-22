@@ -105,8 +105,7 @@ from app.core.prompts.filing_assistant import (
 )
 from app.services.document_template_match import (
     apply_known_case_answers,
-    merge_document_and_mapping_questions,
-    template_questions_to_workflow,
+    workflow_questions_from_db_column,
 )
 from app.services.process_notifications import loading_process_for_phase
 
@@ -490,7 +489,7 @@ def _append_party_to_session(session: FilingSession, validated: Dict[str, Any]) 
 async def _hydrate_template_questions(
     ctx: FilingOrchestratorContext, session: FilingSession
 ) -> str:
-    """Download the selected template PDF and extract form questions."""
+    """Load form questions from configuration.document_templates.questions."""
     if session.phase != FilingPhase.SELECTING_DOCUMENT_TYPE:
         return ""
     if session.selections.get("template_questions_ready"):
@@ -504,7 +503,7 @@ async def _hydrate_template_questions(
     if not template_id and not doc_type:
         return ""
 
-    await ctx.notify("extracting_questions")
+    await ctx.notify("loading_questions")
     templates = await ctx.filing_repo.list_active_document_templates()
     from app.services.document_template_match import match_document_templates
 
@@ -553,6 +552,32 @@ async def _hydrate_template_questions(
             "Please choose a different document type."
         )
 
+    questions_text = str(
+        (chosen or {}).get("questions")
+        or session.selections.get("template_questions")
+        or ""
+    ).strip()
+    if not questions_text:
+        detail = await ctx.filing_repo.get_document_template_by_id(str(template_id))
+        if detail:
+            questions_text = str(detail.get("questions") or "").strip()
+
+    if not questions_text:
+        return (
+            "The selected document template has no questions configured. "
+            "Add questions in configuration.document_templates or via template ingest."
+        )
+
+    mapping_text = str(
+        session.selections.get("cached_field_mapping")
+        or session.selections.get("field_mapping")
+        or ""
+    )
+    try:
+        questions = workflow_questions_from_db_column(questions_text, mapping_text)
+    except ValueError as exc:
+        return str(exc)
+
     version = await ctx.filing_repo.get_latest_template_version(str(template_id))
     s3_bucket = str(
         (version or {}).get("s3_bucket") or session.selections.get("s3_bucket") or ""
@@ -564,11 +589,12 @@ async def _hydrate_template_questions(
         return (
             "That document type is configured, but no template file is available yet."
         )
-    if ctx.s3_manager is None:
-        return "Document storage is not configured, so I cannot load that template."
 
     session.selections["s3_bucket"] = s3_bucket
     session.selections["s3_key"] = s3_key
+    session.selections["field_mapping"] = mapping_text
+    session.selections["cached_field_mapping"] = mapping_text
+    session.selections["template_questions"] = questions_text
     if version and version.get("template_version_id"):
         session.selections["template_version_id"] = str(version["template_version_id"])
     stored_version = None
@@ -579,62 +605,14 @@ async def _hydrate_template_questions(
     if stored_version not in (None, ""):
         session.selections["template_version"] = stored_version
 
-    from app.api.schemas.document import FileType
-    from app.services.court_form_question_service import CourtFormQuestionService
-
-    try:
-        file_bytes = await ctx.s3_manager.download_bytes(s3_key, bucket=s3_bucket or None)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to download template %s from S3", s3_key)
-        return f"I could not download the selected template. {exc}"
-
-    file_name = s3_key.rsplit("/", 1)[-1] or "template.pdf"
-    service = CourtFormQuestionService(s3_manager=ctx.s3_manager)
-    try:
-        extracted = await service.extract_questions(
-            file_bytes=file_bytes,
-            file_name=file_name,
-            file_type=FileType.PDF,
-            file_path="",
-            source="s3",
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Template question extraction failed for %s", s3_key)
-        return f"I loaded the template but could not extract its questions. {exc}"
-
-    await ctx.notify("loading_questions")
-    template_questions, prefilled = template_questions_to_workflow(extracted.questions)
-    mapping_text = str(
-        session.selections.get("cached_field_mapping")
-        or session.selections.get("field_mapping")
-        or ""
-    )
-    session.selections["field_mapping"] = mapping_text
-    session.selections["cached_field_mapping"] = mapping_text
-    questions = merge_document_and_mapping_questions(
-        template_questions,
-        mapping_text,
-    )
     if not questions:
         return (
-            "I opened the selected template but did not find fields to ask about. "
+            "The selected document template has no usable questions. "
             "Please choose a different document type."
         )
 
     session.workflow_questions = questions
     session.checklist = build_checklist_from_questions(None, questions)
-    remapped_prefill = {}
-    for question in questions:
-        name = str(question.get("field_name") or "")
-        if not name:
-            continue
-        if name in prefilled:
-            remapped_prefill[name] = prefilled[name]
-            continue
-        slug = name.lower().replace("-", "_")
-        if slug in prefilled:
-            remapped_prefill[name] = prefilled[slug]
-    session.collected_answers.update(remapped_prefill)
     known_answers, skipped_fields = apply_known_case_answers(
         questions, session.selections
     )
@@ -646,11 +624,15 @@ async def _hydrate_template_questions(
         elif item.field_name in skipped_fields:
             item.status = "skipped"
     session.selections["extracted_form_questions"] = [
-        item.model_dump() if hasattr(item, "model_dump") else dict(item)
-        for item in extracted.questions
+        {
+            "question": row.get("field_label") or row.get("question"),
+            "field": row.get("field_name"),
+            "page": row.get("page"),
+        }
+        for row in questions
     ]
     session.selections["extracted_form_text"] = "\n".join(
-        f"[page {row.get('page') or '?'}] {row.get('field') or ''}: {row.get('question') or ''}"
+        f"{row.get('field') or ''}: {row.get('question') or ''}"
         for row in session.selections["extracted_form_questions"]
     )
     session.required_documents = [
@@ -920,6 +902,12 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         }
 
     async def navigation_node(state: FilingGraphState) -> FilingGraphState:
+        from app.services.filing_flow_guide_service import (
+            FilingFlowGuideService,
+            classify_intake_user_message,
+            looks_like_flow_help,
+        )
+
         cid = state["conversation_id"]
         session = FilingSessionManager.get(cid)
         if not session:
@@ -1024,6 +1012,56 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 matched_locally = True
                 llm_out = {"lookup_action": "confirm_case"}
 
+        intake_msg_kind = classify_intake_user_message(user_message)
+        if (
+            intake_msg_kind == "flow_guide"
+            and user_message.strip()
+            and user_message != GREETING_USER_MESSAGE
+            and not matched_locally
+        ):
+            step_inst = build_phase_selection_message(
+                session.phase.value, session.selections, db_options
+            )
+            guide = FilingFlowGuideService(ctx.bedrock)
+            candidate_message = await guide.answer(
+                session=session,
+                user_message=user_message,
+                history=history,
+                step_instruction=step_inst or "",
+            )
+            candidates = []
+            response_options_override = None
+
+        if (
+            intake_msg_kind == "generic_legal"
+            and user_message.strip()
+            and user_message != GREETING_USER_MESSAGE
+            and not matched_locally
+            and not candidate_message
+        ):
+            try:
+                await ctx.notify("answering_legal_question")
+                state_code = session.selections.get("state_code")
+                case_type = session.selections.get("case_type")
+                rag_out = await ctx.court_rules_service.answer_question(
+                    user_message,
+                    state_code=state_code,
+                    case_type=case_type,
+                )
+                rag_answer = str(rag_out.get("answer") or "").strip()
+                if rag_answer:
+                    candidate_message = sanitize_assistant_text(rag_answer)
+                    candidates = []
+                    response_options_override = None
+                    logger.info(
+                        "[generic_legal] intake RAG sources=%s",
+                        len(rag_out.get("sources") or []),
+                    )
+            except Exception:
+                logger.exception(
+                    "[generic_legal] court_rules RAG failed during intake"
+                )
+
         can_match_locally = (
             (
                 session.mode in (FilingMode.FILING_NEW, FilingMode.FILING_EXISTING)
@@ -1033,6 +1071,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             and bool(db_options)
             and bool(user_message.strip())
             and user_message != GREETING_USER_MESSAGE
+            and intake_msg_kind == "selection"
         )
         if can_match_locally:
             match, candidates = match_option(db_options, user_message)
@@ -1062,7 +1101,7 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         ):
             if try_strict_intent_selection(session, user_message):
                 matched_locally = True
-            else:
+            elif not looks_like_flow_help(user_message):
                 candidate_message = (
                     "Please choose New case or Existing case from the dropdown."
                 )
@@ -1342,7 +1381,12 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         should_use_court_rules = (
             not matched_locally
             and not candidate_message
-            and (intent == "generic_legal" or session.mode == FilingMode.GENERIC)
+            and intake_msg_kind != "flow_guide"
+            and (
+                intent == "generic_legal"
+                or session.mode == FilingMode.GENERIC
+                or intake_msg_kind == "generic_legal"
+            )
             and bool(user_message.strip())
             and user_message != GREETING_USER_MESSAGE
         )
@@ -1827,8 +1871,36 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         if session.phase == FilingPhase.CONFIRMING_WORKFLOW_ANSWERS:
             return await _handle_workflow_review_turn(state, session, user_message)
 
-        await ctx.notify("collecting_workflow_answers")
+        from app.services.filing_flow_guide_service import (
+            FilingFlowGuideService,
+            classify_intake_user_message,
+        )
+
         history = history_for_llm(session, state.get("history") or [])
+        if classify_intake_user_message(user_message) == "flow_guide":
+            guide = FilingFlowGuideService(ctx.bedrock)
+            step_inst = (
+                "Answer the form questions shown in the chat, or paste structured "
+                "form data if you have it."
+            )
+            assistant_message = await guide.answer(
+                session=session,
+                user_message=user_message,
+                history=history,
+                step_instruction=step_inst,
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            result = result_from_session(
+                session, sanitize_assistant_text(assistant_message)
+            )
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
+
+        await ctx.notify("collecting_workflow_answers")
         entered_from_offer = session.phase in (
             FilingPhase.OFFERING_DOCUMENTS,
             FilingPhase.AWAITING_DOCUMENT_UPLOAD,

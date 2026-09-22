@@ -11,6 +11,10 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
+from app.agents.conversation.orchestration.chat_context import (
+    append_chat_turn,
+    history_for_llm,
+)
 from app.agents.conversation.orchestration.context import FilingOrchestratorContext
 from app.agents.conversation.orchestration.helpers import (
     advance_mode_from_intent,
@@ -39,7 +43,8 @@ from app.agents.utils.db_options_format import (
     selection_update_for_option,
 )
 from app.api.schemas.filing_events import FilingMode, FilingPhase, SelectionOptionsPayload
-from app.api.schemas.filing_flow import FilingFlowStepResponse
+from app.api.schemas.filing_flow import FilingFlowGuideResponse, FilingFlowStepResponse
+from app.services.filing_flow_guide_service import FilingFlowGuideService
 from app.services.conversation_repository import ConversationRepository
 from app.services.legal_filing_repository import LegalFilingRepository
 
@@ -87,6 +92,50 @@ class FilingSelectionFlowService:
     async def get_step(self, conversation_id: str) -> FilingFlowStepResponse:
         session = await self._require_session(conversation_id)
         return await self._build_step_response(session)
+
+    async def answer_guide(
+        self,
+        conversation_id: str,
+        question: str,
+    ) -> FilingFlowGuideResponse:
+        session = await self._require_session(conversation_id)
+        q = str(question or "").strip()
+        if not q:
+            raise FilingSelectionFlowError("question is required")
+
+        rows = await self.conversation_repo.get_history(conversation_id, limit=500)
+        history = history_for_llm(session, rows)
+        auth_token = await auth_token_for_user(
+            self._ctx.user_repo, session.user_id
+        )
+        options = await options_for_response(
+            self.filing_repo,
+            session,
+            codes_service=self._ctx.codes_service,
+            bedrock=None,
+            auth_token=auth_token or None,
+        )
+        step_inst = build_phase_selection_message(
+            session.phase.value, session.selections, options
+        )
+        guide = FilingFlowGuideService(self._ctx.bedrock)
+        reply = await guide.answer(
+            session=session,
+            user_message=q,
+            history=history,
+            step_instruction=step_inst or "",
+        )
+        await self.conversation_repo.insert_user_message(conversation_id, q)
+        await self.conversation_repo.insert_ai_message(conversation_id, reply)
+        append_chat_turn(session, q, reply)
+        await persist_system_state(self.conversation_repo, session)
+
+        step = await self._build_step_response(session)
+        return FilingFlowGuideResponse(
+            **step.model_dump(),
+            message=reply,
+            guide=reply,
+        )
 
     async def apply_selection(
         self,

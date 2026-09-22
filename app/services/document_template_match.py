@@ -130,6 +130,48 @@ def match_document_templates(
     return matched
 
 
+def parse_template_questions_text(questions_text: str) -> List[str]:
+    """Split configuration.document_templates.questions (one question per line)."""
+    lines: List[str] = []
+    for raw in str(questions_text or "").replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def workflow_questions_from_db_column(
+    questions_text: str,
+    field_mapping: str,
+) -> List[Dict[str, Any]]:
+    """
+    Build workflow ask-list from RDS ``questions`` text aligned to field_mapping
+    sources (same order as form_data / pipe mapping keys).
+    """
+    from app.services.field_mapping_service import parse_field_mapping_sources
+
+    lines = parse_template_questions_text(questions_text)
+    sources = parse_field_mapping_sources(field_mapping)
+    if not sources:
+        raise ValueError("field_mapping has no askable sources for questions.")
+
+    merged: List[Dict[str, Any]] = []
+    for index, source in enumerate(sources, start=1):
+        label = lines[index - 1] if index - 1 < len(lines) else _humanize_mapping_source(source)
+        row: Dict[str, Any] = {
+            "field_name": source,
+            "field_label": label,
+            "pdf_field": source,
+            "question": label,
+            "required": True,
+            "sort_order": index,
+            "question_type": "email" if source == "$email" else "text",
+            "mapping_source": source,
+        }
+        merged.append(row)
+    return attach_mapping_visibility(merged)
+
+
 def template_questions_to_workflow(
     questions: Iterable[Any],
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:

@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.api.schemas.filing_flow import (
     CreateFilingFlowSessionRequest,
+    FilingFlowGuideRequest,
+    FilingFlowGuideResponse,
     FilingFlowSelectRequest,
     FilingFlowSessionCreatedResponse,
     FilingFlowStepResponse,
@@ -89,5 +91,23 @@ async def select_filing_flow_option(
     service = await _build_service(request)
     try:
         return await service.apply_selection(conversation_id, body.code)
+    except FilingSelectionFlowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/sessions/{conversation_id}/guide",
+    response_model=FilingFlowGuideResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    summary="Ask how the filing wizard works at the current step",
+)
+async def filing_flow_guide(
+    request: Request,
+    conversation_id: str,
+    body: FilingFlowGuideRequest,
+):
+    service = await _build_service(request)
+    try:
+        return await service.answer_guide(conversation_id, body.question)
     except FilingSelectionFlowError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

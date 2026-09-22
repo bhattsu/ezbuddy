@@ -420,7 +420,8 @@ insert_document_template: |
       case_type,
       case_subtype,
       field_mapping,
-      sample_input
+      sample_input,
+      questions
   )
   VALUES (
       $1::uuid,
@@ -435,7 +436,8 @@ insert_document_template: |
       $9,
       $10,
       $11,
-      $12
+      $12,
+      $13
   )
   RETURNING
       id,
@@ -451,7 +453,8 @@ insert_document_template: |
       case_type,
       case_subtype,
       field_mapping,
-      sample_input
+      sample_input,
+      questions
 insert_template_version: |
   INSERT INTO configuration.template_versions (
       id,

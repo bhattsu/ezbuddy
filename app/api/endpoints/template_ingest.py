@@ -200,6 +200,13 @@ async def ingest_court_template(
     case_subtype: str = Form(""),
     field_mapping: str = Form("", description="doc_gen field mapping text or JSON"),
     sample_input: str = Form("", description="doc_gen sample output JSON"),
+    questions: str = Form(
+        "",
+        description=(
+            "Newline-separated form questions shown during filing "
+            "(stored in configuration.document_templates.questions)"
+        ),
+    ),
     effective_from: Optional[date] = Form(None),
     effective_to: Optional[date] = Form(None),
 ):
@@ -222,6 +229,7 @@ async def ingest_court_template(
             case_subtype=case_subtype,
             field_mapping=field_mapping,
             sample_input=sample_input,
+            questions=questions,
             effective_from=effective_from,
             effective_to=effective_to,
         )
@@ -283,6 +291,9 @@ def _ingest_form_html(tree: Dict[str, List[str]]) -> str:
     <label>case_subtype <input name="case_subtype" placeholder="WITH_CHILDREN"/></label>
     <label>field_mapping <textarea name="field_mapping"></textarea></label>
     <label>sample_input <textarea name="sample_input"></textarea></label>
+    <label>questions <span class="hint">(one question per line)</span>
+      <textarea name="questions" placeholder="What is the full legal name of the Plaintiff?"></textarea>
+    </label>
     <label>effective_from <input type="date" name="effective_from"/></label>
     <label>effective_to <input type="date" name="effective_to"/></label>
     <button type="submit">Upload and ingest</button>

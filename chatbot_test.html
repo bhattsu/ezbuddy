@@ -329,6 +329,32 @@
       display: flex;
       justify-content: flex-end;
     }
+    .selection-guide {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--line);
+    }
+    .selection-guide label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: block;
+      margin-bottom: 0.35rem;
+    }
+    .selection-guide-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: stretch;
+    }
+    .selection-guide-row input {
+      flex: 1;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+    .selection-guide-row button {
+      white-space: nowrap;
+    }
 
     .composer {
       border-top: 1px solid var(--line);
@@ -1075,11 +1101,53 @@
         });
 
         actions.appendChild(submit);
+
+        const guideBlock = document.createElement("div");
+        guideBlock.className = "selection-guide";
+        const guideLabel = document.createElement("label");
+        guideLabel.textContent = "Need help with this step?";
+        const guideRow = document.createElement("div");
+        guideRow.className = "selection-guide-row";
+        const guideInput = document.createElement("input");
+        guideInput.type = "text";
+        guideInput.className = "selection-guide-input";
+        guideInput.placeholder = "e.g. What should I do now?";
+        guideInput.autocomplete = "off";
+        const guideBtn = document.createElement("button");
+        guideBtn.type = "button";
+        guideBtn.className = "btn";
+        guideBtn.textContent = "Get guide";
+        guideBtn.addEventListener("click", () => {
+          const q = guideInput.value.trim();
+          if (!q) {
+            setStatus("Type a question about this step first.", "error");
+            return;
+          }
+          if (waitingForResponse) {
+            setStatus("Please wait for the assistant to respond.", "error");
+            return;
+          }
+          els.message.value = q;
+          sendMessage();
+          guideInput.value = "";
+        });
+        guideInput.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            guideBtn.click();
+          }
+        });
+        guideRow.appendChild(guideInput);
+        guideRow.appendChild(guideBtn);
+        guideBlock.appendChild(guideLabel);
+        guideBlock.appendChild(guideRow);
+
         picker.appendChild(label);
         picker.appendChild(meta);
         picker.appendChild(search);
         picker.appendChild(select);
         picker.appendChild(actions);
+        picker.appendChild(guideBlock);
         els.options.appendChild(picker);
         fillSelect("");
         search.focus();
