@@ -451,8 +451,6 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 question.get("mapping_source"),
                 question.get("pdf_field"),
                 question.get("field"),
-                question.get("field_label"),
-                question.get("question"),
             ):
                 if alias:
                     answers.setdefault(str(alias), value)
@@ -486,7 +484,7 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             sample_input = session.selections.get("sample_input")
             mapping_result = await FieldMappingService(ctx.bedrock).map_fields(
                 field_mapping=field_mapping,
-                workflow_questions=session.workflow_questions,
+                workflow_questions=workflow_questions,
                 collected_answers=answers,
                 filled_fields=filled.fields,
                 selections=session.selections,

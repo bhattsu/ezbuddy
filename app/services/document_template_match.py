@@ -146,30 +146,35 @@ def workflow_questions_from_db_column(
 ) -> List[Dict[str, Any]]:
     """
     Build workflow ask-list from RDS ``questions`` text aligned to field_mapping
-    sources (same order as form_data / pipe mapping keys).
+    sources by matching each line to the correct mapping key (not line index).
     """
+    import logging
+
     from app.services.field_mapping_service import parse_field_mapping_sources
 
+    logger = logging.getLogger(__name__)
     lines = parse_template_questions_text(questions_text)
     sources = parse_field_mapping_sources(field_mapping)
     if not sources:
         raise ValueError("field_mapping has no askable sources for questions.")
 
-    merged: List[Dict[str, Any]] = []
-    for index, source in enumerate(sources, start=1):
-        label = lines[index - 1] if index - 1 < len(lines) else _humanize_mapping_source(source)
-        row: Dict[str, Any] = {
-            "field_name": source,
-            "field_label": label,
-            "pdf_field": source,
-            "question": label,
-            "required": True,
-            "sort_order": index,
-            "question_type": "email" if source == "$email" else "text",
-            "mapping_source": source,
+    line_questions: List[Dict[str, Any]] = [
+        {
+            "field_name": f"__line_{index}",
+            "field_label": line,
+            "question": line,
         }
-        merged.append(row)
-    return attach_mapping_visibility(merged)
+        for index, line in enumerate(lines, start=1)
+    ]
+    merged = merge_document_and_mapping_questions(line_questions, field_mapping)
+    if len(lines) != len(sources):
+        logger.warning(
+            "Template has %d question lines but %d field_mapping sources; "
+            "questions were matched to fields by wording, not line order.",
+            len(lines),
+            len(sources),
+        )
+    return merged
 
 
 def template_questions_to_workflow(
@@ -312,6 +317,39 @@ def merge_document_and_mapping_questions(
     merged: List[Dict[str, Any]] = []
     used: set[str] = set()
 
+    _MATCH_STOP = frozenset(
+        {
+            "plaintiff",
+            "defendant",
+            "petitioner",
+            "respondent",
+            "full",
+            "legal",
+            "name",
+            "the",
+            "and",
+            "for",
+            "your",
+        }
+    )
+    _SINGLE_TOKEN_HINTS = frozenset(
+        {
+            "zip",
+            "zipcode",
+            "email",
+            "ssn",
+            "county",
+            "domicile",
+            "grounds",
+            "marriage",
+            "children",
+            "license",
+            "notice",
+            "protective",
+            "domicile",
+        }
+    )
+
     def _matches(question: Dict[str, Any], source: str) -> bool:
         source_norm = normalize_token_text(source)
         haystack = normalize_token_text(
@@ -324,10 +362,18 @@ def merge_document_and_mapping_questions(
         field_slug = re.sub(
             r"[^a-z0-9]+", "_", str(question.get("field_name") or "").lower()
         ).strip("_")
-        return bool(
-            (source_norm and (source_norm in haystack or haystack in source_norm))
-            or (source_slug and source_slug == field_slug)
-        )
+        if (source_norm and (source_norm in haystack or haystack in source_norm)) or (
+            source_slug and source_slug == field_slug
+        ):
+            return True
+        source_tokens = _tokens(re.sub(r"^_+", "", source)) - _MATCH_STOP
+        label_tokens = _tokens(haystack) - _MATCH_STOP
+        overlap = source_tokens & label_tokens
+        if len(overlap) >= 2:
+            return True
+        if len(overlap) == 1 and overlap & _SINGLE_TOKEN_HINTS:
+            return True
+        return False
 
     for index, source in enumerate(sources, start=1):
         if source in used:
@@ -662,6 +708,10 @@ def apply_known_case_answers(
             continue
         if case_number and any(hint in label for hint in _CAUSE_HINTS):
             answers.setdefault(name, case_number)
+            continue
+        stem = _mapping_stem(name)
+        if county and stem in ("COUNTY_COURT", "COUNTY"):
+            answers.setdefault(name, county)
             continue
         if (
             county

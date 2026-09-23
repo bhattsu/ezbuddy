@@ -144,6 +144,46 @@ def allowed_workflow_update_keys(pending_batch: List[Dict[str, Any]]) -> set[str
     return allowed
 
 
+def pending_workflow_field_names(
+    *,
+    checklist_items: List[Any],
+    workflow_questions: List[Dict[str, Any]],
+    collected_answers: Dict[str, Any],
+) -> set[str]:
+    """All visible workflow fields not yet in collected_answers."""
+    names: set[str] = set()
+    for row in list_all_pending_questions(
+        checklist_items=checklist_items,
+        workflow_questions=workflow_questions,
+        collected_answers=collected_answers,
+    ):
+        name = str(row.get("field_name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def filter_workflow_recorded_answers(
+    answers_update: Dict[str, Any],
+    *,
+    known_fields: set[str],
+    pending_fields: set[str],
+    collected_answers: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Persist LLM answers for pending fields and corrections to fields already set.
+    Allows multi-field replies when the user answers several open questions at once.
+    """
+    recorded: Dict[str, Any] = {}
+    for key, val in (answers_update or {}).items():
+        label = str(key or "").strip()
+        if not label or label not in known_fields:
+            continue
+        if label in collected_answers or label in pending_fields:
+            recorded[label] = val
+    return recorded
+
+
 def compact_form_questions(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Small field list for the conversational form-fill agent."""
     compact: List[Dict[str, Any]] = []

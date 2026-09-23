@@ -38,7 +38,8 @@ Prior request/response turns for this session. Keep using those answers.
 
 Rules:
 - answers_update keys MUST be field_name values copied exactly from "Form fields still open". Never invent or guess field names.
-- On each turn, fill at most the field(s) the user actually answered in this message. Do NOT shift values across unrelated fields (dates go to date fields, names to name fields, addresses to address fields).
+- On each turn, fill every open field the user clearly answered in this message (including extra facts beyond the last question). Do NOT shift values across unrelated fields (dates go to date fields, names to name fields, addresses to address fields, zip codes to zip fields, yes/no to boolean fields).
+- If the user already gave a fact earlier in the conversation history, you may set that field_name now and skip asking it again.
 - If only one field is open, put the user's entire reply in that field_name only.
 - When a pending field includes cluster_fields, map the user's reply onto cluster fields only when the user clearly provided split values for each (e.g. full address broken into street, city, state, zip). Otherwise fill only the primary field_name.
 - Do not copy example or placeholder data from the prompt into answers_update.

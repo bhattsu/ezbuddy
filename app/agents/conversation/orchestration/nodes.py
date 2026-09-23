@@ -90,10 +90,12 @@ from app.agents.utils.language_policy import (
 )
 from app.agents.utils.text_sanitize import sanitize_assistant_text
 from app.agents.utils.workflow_batch import (
-    allowed_workflow_update_keys,
     batch_pending_questions,
     compact_form_questions,
+    filter_workflow_recorded_answers,
     format_next_form_question_message,
+    list_all_pending_questions,
+    pending_workflow_field_names,
 )
 from app.adapters.uslegalpro.client import USLegalProApiError
 from app.api.schemas.filing_events import FilingMode, FilingPhase
@@ -1824,16 +1826,13 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         history = history_for_llm(session, state.get("history") or [])
         next_q = next_pending_question(session)
         from_template = bool(session.selections.get("template_questions_ready"))
+        pending_open = list_all_pending_questions(
+            checklist_items=session.checklist.items,
+            workflow_questions=session.workflow_questions,
+            collected_answers=session.collected_answers,
+        )
         if from_template:
-            pending_batch = compact_form_questions(
-                batch_pending_questions(
-                    checklist_items=session.checklist.items,
-                    workflow_questions=session.workflow_questions,
-                    collected_answers=session.collected_answers,
-                    max_batch=1,
-                    same_type_only=False,
-                )
-            )
+            pending_batch = compact_form_questions(pending_open)
         else:
             pending_batch = batch_pending_questions(
                 checklist_items=session.checklist.items,
@@ -1855,12 +1854,17 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             name = str(q.get("field_name") or "").strip()
             if name:
                 known_fields.add(name)
-        allowed_keys = allowed_workflow_update_keys(pending_batch)
-        recorded = {
-            key: val
-            for key, val in (llm_out.get("answers_update") or {}).items()
-            if key in known_fields and (not allowed_keys or key in allowed_keys)
-        }
+        pending_fields = pending_workflow_field_names(
+            checklist_items=session.checklist.items,
+            workflow_questions=session.workflow_questions,
+            collected_answers=session.collected_answers,
+        )
+        recorded = filter_workflow_recorded_answers(
+            llm_out.get("answers_update") or {},
+            known_fields=known_fields,
+            pending_fields=pending_fields,
+            collected_answers=session.collected_answers,
+        )
         for key, val in recorded.items():
             session.collected_answers[key] = val
         from app.services.workflow_question_consolidation_service import (
@@ -1978,16 +1982,13 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
 
         next_q = next_pending_question(session)
         from_template = bool(session.selections.get("template_questions_ready"))
+        pending_open = list_all_pending_questions(
+            checklist_items=session.checklist.items,
+            workflow_questions=session.workflow_questions,
+            collected_answers=session.collected_answers,
+        )
         if from_template:
-            pending_batch = compact_form_questions(
-                batch_pending_questions(
-                    checklist_items=session.checklist.items,
-                    workflow_questions=session.workflow_questions,
-                    collected_answers=session.collected_answers,
-                    max_batch=1,
-                    same_type_only=False,
-                )
-            )
+            pending_batch = compact_form_questions(pending_open)
         else:
             pending_batch = batch_pending_questions(
                 checklist_items=session.checklist.items,
@@ -2018,12 +2019,17 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             (session.metadata.get("workflow_field_aliases") or {}).keys()
         )
         known_fields.update(alias_fields)
-        allowed_keys = allowed_workflow_update_keys(pending_batch)
-        recorded = {
-            key: val
-            for key, val in (llm_out.get("answers_update") or {}).items()
-            if key in known_fields and (not allowed_keys or key in allowed_keys)
-        }
+        pending_fields = pending_workflow_field_names(
+            checklist_items=session.checklist.items,
+            workflow_questions=session.workflow_questions,
+            collected_answers=session.collected_answers,
+        )
+        recorded = filter_workflow_recorded_answers(
+            llm_out.get("answers_update") or {},
+            known_fields=known_fields,
+            pending_fields=pending_fields,
+            collected_answers=session.collected_answers,
+        )
         for key, val in recorded.items():
             session.collected_answers[key] = val
         from app.services.workflow_question_consolidation_service import (
