@@ -124,6 +124,21 @@ class Settings(BaseSettings):
         description="Document analysis API URL",
     )
     CHATBOT_WS_ENABLED: bool = Field(default=True)
+    # Filing intake defaults (not overridable via .env — change here if needed).
+    FILING_STRICT_DROPDOWN_INTAKE: bool = Field(
+        default=True,
+        description=(
+            "Until form questions are extracted: new-case intake uses dropdown codes only — "
+            "no navigation/court-match/case-intent LLM on the RDS catalog."
+        ),
+    )
+    FILING_USE_LIVE_TYLER_CODES: bool = Field(
+        default=True,
+        description=(
+            "Load Tyler dropdowns from live /v2/{state}/code/* API link cascade instead of "
+            "integration.jurisdiction_api_data (RDS court catalog)."
+        ),
+    )
 
     # ============== US Legal Pro external API (codes / dropdowns) ==============
     USLEGALPRO_API_BASE_URL: str = Field(
