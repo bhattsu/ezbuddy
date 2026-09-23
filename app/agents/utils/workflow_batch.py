@@ -130,6 +130,20 @@ def format_pending_questions_message(
     return prefix or body
 
 
+def allowed_workflow_update_keys(pending_batch: List[Dict[str, Any]]) -> set[str]:
+    """Field names the workflow agent may write on this turn."""
+    allowed: set[str] = set()
+    for row in pending_batch or []:
+        name = str(row.get("field_name") or "").strip()
+        if name:
+            allowed.add(name)
+        for cluster in row.get("cluster_fields") or []:
+            label = str(cluster).strip()
+            if label:
+                allowed.add(label)
+    return allowed
+
+
 def compact_form_questions(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Small field list for the conversational form-fill agent."""
     compact: List[Dict[str, Any]] = []

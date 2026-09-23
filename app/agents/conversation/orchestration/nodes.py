@@ -90,10 +90,10 @@ from app.agents.utils.language_policy import (
 )
 from app.agents.utils.text_sanitize import sanitize_assistant_text
 from app.agents.utils.workflow_batch import (
+    allowed_workflow_update_keys,
     batch_pending_questions,
     compact_form_questions,
     format_next_form_question_message,
-    list_all_pending_questions,
 )
 from app.adapters.uslegalpro.client import USLegalProApiError
 from app.api.schemas.filing_events import FilingMode, FilingPhase
@@ -1761,7 +1761,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         user_message: str,
     ) -> FilingGraphState:
         await ctx.notify("confirming_workflow_answers")
-        correction_fields = apply_chat_detail_corrections(session, user_message)
+        correction_fields = await apply_chat_detail_corrections(
+            session, user_message, bedrock=ctx.bedrock
+        )
         if correction_fields:
             sync_checklist_from_answers(session)
 
@@ -1824,10 +1826,12 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         from_template = bool(session.selections.get("template_questions_ready"))
         if from_template:
             pending_batch = compact_form_questions(
-                list_all_pending_questions(
+                batch_pending_questions(
                     checklist_items=session.checklist.items,
                     workflow_questions=session.workflow_questions,
                     collected_answers=session.collected_answers,
+                    max_batch=1,
+                    same_type_only=False,
                 )
             )
         else:
@@ -1851,10 +1855,11 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             name = str(q.get("field_name") or "").strip()
             if name:
                 known_fields.add(name)
+        allowed_keys = allowed_workflow_update_keys(pending_batch)
         recorded = {
             key: val
             for key, val in (llm_out.get("answers_update") or {}).items()
-            if key in known_fields
+            if key in known_fields and (not allowed_keys or key in allowed_keys)
         }
         for key, val in recorded.items():
             session.collected_answers[key] = val
@@ -1964,7 +1969,9 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             FilingPhase.AWAITING_DOCUMENT_UPLOAD,
         )
         offer_phase = session.phase
-        correction_fields = apply_chat_detail_corrections(session, user_message)
+        correction_fields = await apply_chat_detail_corrections(
+            session, user_message, bedrock=ctx.bedrock
+        )
         if correction_fields:
             session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
             sync_checklist_from_answers(session)
@@ -1973,10 +1980,12 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         from_template = bool(session.selections.get("template_questions_ready"))
         if from_template:
             pending_batch = compact_form_questions(
-                list_all_pending_questions(
+                batch_pending_questions(
                     checklist_items=session.checklist.items,
                     workflow_questions=session.workflow_questions,
                     collected_answers=session.collected_answers,
+                    max_batch=1,
+                    same_type_only=False,
                 )
             )
         else:
@@ -2009,10 +2018,11 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             (session.metadata.get("workflow_field_aliases") or {}).keys()
         )
         known_fields.update(alias_fields)
+        allowed_keys = allowed_workflow_update_keys(pending_batch)
         recorded = {
             key: val
             for key, val in (llm_out.get("answers_update") or {}).items()
-            if key in known_fields
+            if key in known_fields and (not allowed_keys or key in allowed_keys)
         }
         for key, val in recorded.items():
             session.collected_answers[key] = val

@@ -36,6 +36,7 @@ from app.services.document_template_match import match_document_templates
 from app.services.legal_filing_repository import LegalFilingRepository
 from app.adapters.uslegalpro.tokens import resolve_auth_token
 from app.services.operational_user_repository import OperationalUserRepository
+from app.config.settings import get_settings
 from app.services.uslegalpro_codes_service import USLegalProCodesService
 
 logger = logging.getLogger(__name__)
@@ -340,6 +341,8 @@ async def apply_catalog_court_from_text(
     """If the user named a unique court in natural language, store its code."""
     if strict_dropdown_intake(session):
         return
+    if _use_live_tyler_codes():
+        return
     if session.mode != FilingMode.FILING_NEW:
         return
     if session.phase not in (
@@ -373,6 +376,8 @@ async def apply_catalog_shortcuts(
     bedrock: Optional[Bedrock] = None,
 ) -> None:
     """Skip unique category/type after a court is chosen from the catalog."""
+    if _use_live_tyler_codes():
+        return
     if session.mode != FilingMode.FILING_NEW:
         return
     rows = await _catalog_rows_for_session(filing_repo, session.selections)
@@ -444,10 +449,25 @@ async def prefetch_court_catalog(
     session: FilingSession,
 ) -> None:
     """Load and cache flattened court rows after the shared state step."""
+    if get_settings().FILING_USE_LIVE_TYLER_CODES:
+        return
     state_code = str(session.selections.get("state_code") or "")
     if not state_code:
         return
     await get_court_catalog().rows_for_state(state_code, filing_repo)
+
+
+def _use_live_tyler_codes() -> bool:
+    return bool(get_settings().FILING_USE_LIVE_TYLER_CODES)
+
+
+def _codes_service_for(
+    codes_service: Optional[USLegalProCodesService],
+    auth_token: Optional[str],
+) -> USLegalProCodesService:
+    if str(auth_token or "").strip():
+        return USLegalProCodesService.for_auth_token(str(auth_token).strip())
+    return codes_service or USLegalProCodesService()
 
 
 async def load_db_options(
@@ -459,9 +479,8 @@ async def load_db_options(
     bedrock: Optional[Bedrock] = None,
     auth_token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    service = codes_service or USLegalProCodesService()
-    if mode == FilingMode.FILING_EXISTING and str(auth_token or "").strip():
-        service = USLegalProCodesService.for_auth_token(str(auth_token).strip())
+    service = _codes_service_for(codes_service, auth_token)
+    live_tyler = _use_live_tyler_codes()
     if phase in (FilingPhase.GREETING, FilingPhase.INTENT_PENDING):
         if selections.get("state_code"):
             return []
@@ -474,7 +493,10 @@ async def load_db_options(
     if phase == FilingPhase.SELECTING_COUNTY:
         return await filing_repo.get_counties(selections.get("state_code"))
     if phase == FilingPhase.SELECTING_JURISDICTION:
-        if mode == FilingMode.FILING_NEW:
+        if (
+            mode == FilingMode.FILING_NEW
+            and not live_tyler
+        ):
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
                 scoped = await _scoped_catalog_rows(
@@ -483,39 +505,50 @@ async def load_db_options(
                 return jurisdiction_options(scoped)
         if service and selections.get("state_code"):
             return await service.get_jurisdictions(selections["state_code"])
-        return await filing_repo.get_jurisdictions_for_county(
-            selections.get("state_code"),
-            county_name=selections.get("county_name"),
-            county_id=selections.get("county_id"),
-        )
+        if not live_tyler:
+            return await filing_repo.get_jurisdictions_for_county(
+                selections.get("state_code"),
+                county_name=selections.get("county_name"),
+                county_id=selections.get("county_id"),
+            )
+        return []
     if phase == FilingPhase.EXISTING_SELECTING_JURISDICTION:
         if service and selections.get("state_code"):
             return await service.get_jurisdictions(selections["state_code"])
         return []
     if phase == FilingPhase.SELECTING_CASE_CATEGORY:
-        if mode == FilingMode.FILING_NEW:
+        if mode == FilingMode.FILING_NEW and not live_tyler:
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
                 return category_options(
                     _catalog_rows_for_selected_court(rows, selections, phase=phase)
                 )
+        if service:
+            url = await service.resolve_case_category_codes_url(selections)
+            if url:
+                return await service.get_case_categories_from_jurisdiction_link(url)
         url = selections.get("case_category_codes_url")
         if service and url:
             return await service.get_case_categories_from_jurisdiction_link(url)
         return []
     if phase == FilingPhase.SELECTING_CASE_TYPE:
-        if mode == FilingMode.FILING_NEW:
+        if mode == FilingMode.FILING_NEW and not live_tyler:
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
                 return case_type_options(
                     _catalog_rows_for_selected_court(rows, selections, phase=phase)
                 )
+        if service:
+            url = await service.resolve_case_type_codes_url(selections)
+            if url:
+                return await service.get_case_types_from_category_link(url)
         url = selections.get("case_type_codes_url")
         if service and url:
             return await service.get_case_types_from_category_link(url)
-        code = selections.get("jurisdiction_code")
-        if code:
-            return await filing_repo.get_workflows_for_jurisdiction(code)
+        if not live_tyler:
+            code = selections.get("jurisdiction_code")
+            if code:
+                return await filing_repo.get_workflows_for_jurisdiction(code)
         return []
     if phase == FilingPhase.SELECTING_CASE_PARTIES:
         if service:

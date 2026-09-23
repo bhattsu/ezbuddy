@@ -131,6 +131,14 @@ class Settings(BaseSettings):
             "no navigation/court-match/case-intent LLM and no catalog batches sent to Bedrock."
         ),
     )
+    FILING_USE_LIVE_TYLER_CODES: bool = Field(
+        default=True,
+        description=(
+            "Load jurisdiction, case category, case type, party, filer, filing code, and "
+            "related Tyler dropdowns from live /v2/{state}/code/* API links instead of "
+            "integration.jurisdiction_api_data (RDS court catalog)."
+        ),
+    )
 
     # ============== US Legal Pro external API (codes / dropdowns) ==============
     USLEGALPRO_API_BASE_URL: str = Field(

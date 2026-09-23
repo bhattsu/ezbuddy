@@ -371,7 +371,13 @@ _CHILD_HINTS = (
     "possessory",
 )
 _CAUSE_HINTS = ("cause number", "case number", "cause no")
-_COUNTY_HINTS = ("county name", "county of", "what is the county")
+_COUNTY_HINTS = (
+    "county name",
+    "county of",
+    "what is the county",
+    "county where",
+    "filed in",
+)
 _COURT_TYPE_HINTS = ("district court or county court", "court type", "district court")
 _PETITIONER_HINTS = ("petitioner", "plaintiff")
 _RESPONDENT_HINTS = ("respondent", "defendant")
@@ -407,41 +413,217 @@ def _case_has_no_children(selections: Dict[str, Any]) -> bool:
     )
 
 
-def _party_names_from_selections(selections: Dict[str, Any]) -> tuple[str, str]:
+_MARRIAGE_TITLE_RE = re.compile(
+    r"(?i)matter\s+of\s+the\s+marriage\s+of\s+(.+)$"
+)
+
+
+def _party_display_name(party: Dict[str, Any]) -> str:
+    name = (
+        party.get("name")
+        or party.get("full_name")
+        or " ".join(
+            str(party.get(key) or "").strip()
+            for key in ("first_name", "middle_name", "last_name")
+        ).strip()
+    )
+    return re.sub(r"\s+", " ", str(name or "")).strip()
+
+
+def _clean_role_prefix_from_name(name: str) -> str:
+    text = re.sub(r"\s+", " ", str(name or "")).strip()
+    upper = text.upper()
+    for prefix in ("PLAINTIFF", "DEFENDANT", "PETITIONER", "RESPONDENT"):
+        if upper.startswith(prefix):
+            return text[len(prefix) :].strip(" ,") or text
+    return text
+
+
+def _party_role_bucket(party: Dict[str, Any]) -> str:
+    role = normalize_token_text(
+        " ".join(
+            str(party.get(key) or "")
+            for key in (
+                "role",
+                "party_type",
+                "party_type_name",
+                "type",
+                "type_name",
+                "description",
+            )
+        )
+    )
+    if any(token in role for token in ("petitioner", "plaintiff", "appellant")):
+        return "plaintiff"
+    if any(token in role for token in ("respondent", "defendant", "appellee")):
+        return "defendant"
+    display = _party_display_name(party).upper()
+    if "PLAINTIFF" in display or "PETITIONER" in display:
+        return "plaintiff"
+    if "DEFENDANT" in display or "RESPONDENT" in display:
+        return "defendant"
+    return ""
+
+
+def _parse_marriage_case_title(title: str) -> tuple[str, str]:
+    match = _MARRIAGE_TITLE_RE.search(str(title or "").strip())
+    if not match:
+        return "", ""
+    rest = match.group(1).strip()
+    parts = [part.strip(" ,") for part in re.split(r"\s*,\s*", rest) if part.strip(" ,")]
+    if len(parts) < 2:
+        return "", ""
+    petitioner = _clean_role_prefix_from_name(parts[0])
+    respondent = _clean_role_prefix_from_name(parts[-1])
+    return petitioner, respondent
+
+
+def _party_list_from_selections(selections: Dict[str, Any]) -> List[Dict[str, Any]]:
     details = selections.get("case_details") or selections.get("case_metadata") or {}
-    parties = details.get("case_parties") if isinstance(details, dict) else []
+    raw = selections.get("existing_case_parties")
+    if isinstance(raw, list) and raw:
+        return [dict(row) for row in raw if isinstance(row, dict)]
+    if isinstance(details, dict):
+        parties = details.get("case_parties")
+        if isinstance(parties, list):
+            return [dict(row) for row in parties if isinstance(row, dict)]
+    return []
+
+
+def is_full_person_name_field(field_name: str, field_label: str = "") -> bool:
+    """True for plaintiff/defendant full legal name fields — not SSN, zip, name change, etc."""
+    blob = normalize_token_text(f"{field_name} {field_label}")
+    if not blob:
+        return False
+    blocked = (
+        "social security",
+        "ssn",
+        "name change",
+        "zip",
+        "email",
+        "phone",
+        "license",
+        "driver",
+        "domicile",
+        "address",
+        "city",
+        "state",
+        "county",
+        "cause number",
+        "case number",
+        "grounds",
+        "notice",
+        "protective order",
+        "marriage",
+        "living together",
+    )
+    if any(term in blob for term in blocked):
+        return False
+    if re.search(r"\b(full\s+)?legal\s+name\b", blob):
+        return True
+    if "full name" in blob:
+        return True
+    if re.search(r"\b(plaintiff|defendant|petitioner|respondent)\b", blob):
+        return "name" in blob.split() or blob.endswith(" name")
+    if field_name.upper().endswith("_FULL_NAME"):
+        return True
+    return False
+
+
+def party_side_for_field(field_name: str, field_label: str = "") -> str:
+    blob = normalize_token_text(f"{field_name} {field_label}")
+    if "defendant" in blob or "respondent" in blob:
+        return "defendant"
+    if "plaintiff" in blob or "petitioner" in blob:
+        return "plaintiff"
+    upper = field_name.upper()
+    if "DEFENDANT" in upper or "RESPONDENT" in upper:
+        return "defendant"
+    if "PLAINTIFF" in upper or "PETITIONER" in upper:
+        return "plaintiff"
+    return ""
+
+
+def is_usable_party_name(name: str) -> bool:
+    """False for API placeholders like PLAINTIFF PARTY → PARTY."""
+    norm = normalize_token_text(name)
+    if not norm:
+        return False
+    tokens = norm.split()
+    placeholder = {
+        "party",
+        "plaintiff",
+        "defendant",
+        "petitioner",
+        "respondent",
+        "unknown",
+        "na",
+        "n",
+        "a",
+        "ii",
+        "iii",
+        "iv",
+    }
+    if norm in placeholder:
+        return False
+    if len(tokens) == 1 and tokens[0] in placeholder:
+        return False
+    if len(tokens) == 2 and tokens[0] in placeholder and tokens[1] in placeholder:
+        return False
+    if norm in ("plaintiff party", "defendant party"):
+        return False
+    if len(norm.replace(" ", "")) < 3:
+        return False
+    return True
+
+
+def filing_user_party_side(selections: Dict[str, Any]) -> str:
+    filing_id = str(selections.get("filing_party_id") or "").strip()
+    parties = _party_list_from_selections(selections)
+    if filing_id:
+        for party in parties:
+            if str(party.get("id") or "").strip() == filing_id:
+                side = _party_role_bucket(party)
+                if side:
+                    return side
+    if parties:
+        side = _party_role_bucket(parties[0])
+        if side:
+            return side
+    return "plaintiff"
+
+
+def _party_names_from_selections(selections: Dict[str, Any]) -> tuple[str, str]:
+    parties = _party_list_from_selections(selections)
     petitioner = ""
     respondent = ""
-    if isinstance(parties, list):
-        for party in parties:
-            if not isinstance(party, dict):
-                continue
-            name = (
-                party.get("name")
-                or party.get("full_name")
-                or " ".join(
-                    str(party.get(key) or "").strip()
-                    for key in ("first_name", "middle_name", "last_name")
-                ).strip()
-            )
-            role = normalize_token_text(
-                party.get("role") or party.get("party_type") or party.get("type") or ""
-            )
-            if name and any(token in role for token in ("petitioner", "plaintiff")):
-                petitioner = petitioner or str(name)
-            if name and any(token in role for token in ("respondent", "defendant")):
-                respondent = respondent or str(name)
+    for party in parties:
+        name = _clean_role_prefix_from_name(_party_display_name(party))
+        if not name:
+            continue
+        bucket = _party_role_bucket(party)
+        if bucket == "plaintiff":
+            petitioner = petitioner or name
+        elif bucket == "defendant":
+            respondent = respondent or name
+
+    details = selections.get("case_details") or selections.get("case_metadata") or {}
     title = str(
         (details.get("case_title") if isinstance(details, dict) else "")
         or selections.get("case_title")
         or ""
     )
-    if " of " in title.lower() and (not petitioner or not respondent):
-        tail = title.split(" of ", 1)[-1]
-        parts = [part.strip(" ,") for part in tail.split(",") if part.strip(" ,")]
-        if len(parts) >= 2:
-            petitioner = petitioner or parts[0]
-            respondent = respondent or parts[1]
+    if not petitioner or not respondent:
+        parsed_p, parsed_r = _parse_marriage_case_title(title)
+        petitioner = petitioner or parsed_p
+        respondent = respondent or parsed_r
+
+    if (not petitioner or not respondent) and len(parties) >= 2:
+        first = _clean_role_prefix_from_name(_party_display_name(parties[0]))
+        second = _clean_role_prefix_from_name(_party_display_name(parties[1]))
+        petitioner = petitioner or first
+        respondent = respondent or second
+
     return petitioner, respondent
 
 
@@ -481,7 +663,11 @@ def apply_known_case_answers(
         if case_number and any(hint in label for hint in _CAUSE_HINTS):
             answers.setdefault(name, case_number)
             continue
-        if county and any(hint in label for hint in _COUNTY_HINTS):
+        if (
+            county
+            and "county" in label
+            and any(hint in label for hint in _COUNTY_HINTS)
+        ):
             answers.setdefault(name, county)
             continue
         if "district" in jurisdiction_display and any(
@@ -489,11 +675,21 @@ def apply_known_case_answers(
         ):
             answers.setdefault(name, "District Court")
             continue
-        if petitioner and any(hint in label for hint in _PETITIONER_HINTS) and "attorney" not in label:
-            if "name" in label or label.endswith("petitioner") or "full name" in label:
+        field_label = str(question.get("field_label") or question.get("question") or "")
+        if (
+            petitioner
+            and is_usable_party_name(petitioner)
+            and is_full_person_name_field(name, field_label)
+        ):
+            if party_side_for_field(name, field_label) in ("", "plaintiff"):
                 answers.setdefault(name, petitioner)
                 continue
-        if respondent and any(hint in label for hint in _RESPONDENT_HINTS) and "attorney" not in label:
-            if "name" in label or "full name" in label:
+        if (
+            respondent
+            and is_usable_party_name(respondent)
+            and is_full_person_name_field(name, field_label)
+        ):
+            if party_side_for_field(name, field_label) == "defendant":
                 answers.setdefault(name, respondent)
+                continue
     return answers, skipped

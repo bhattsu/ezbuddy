@@ -1,5 +1,7 @@
 """Mid-session chat corrections for collected details."""
 
+import pytest
+
 from app.agents.conversation.orchestration.detail_corrections import (
     apply_chat_detail_corrections,
     looks_like_detail_correction,
@@ -15,7 +17,10 @@ from app.agents.conversation.orchestration.state import (
 def _session() -> FilingSession:
     session = FilingSession(conversation_id="c1", user_id="u1")
     session.workflow_questions = [
-        {"field_name": "PETITIONER_FULL_NAME", "field_label": "Petitioner name"},
+        {
+            "field_name": "PETITIONER_FULL_NAME",
+            "field_label": "What is the full legal name of the Petitioner?",
+        },
         {"field_name": "CHILDREN", "field_label": "Has children"},
         {
             "field_name": "CHILD_NAME",
@@ -51,20 +56,22 @@ def test_looks_like_detail_correction():
     assert not looks_like_detail_correction("yes I have the documents")
 
 
-def test_change_name_updates_collected_answer_and_checklist():
+@pytest.mark.asyncio
+async def test_change_name_updates_collected_answer_and_checklist():
     session = _session()
-    changed = apply_chat_detail_corrections(session, "change name to John")
+    changed = await apply_chat_detail_corrections(session, "change name to John", bedrock=None)
     sync_checklist_from_answers(session)
     assert "PETITIONER_FULL_NAME" in changed
-    assert session.collected_answers["PETITIONER_FULL_NAME"] == "John Doe"
+    assert session.collected_answers["PETITIONER_FULL_NAME"] == "John"
     item = next(
         row for row in session.checklist.items if row.field_name == "PETITIONER_FULL_NAME"
     )
     assert item.status == "answered"
-    assert item.value == "John Doe"
+    assert item.value == "John"
 
 
-def test_change_license_number_updates_matching_field():
+@pytest.mark.asyncio
+async def test_change_license_number_updates_matching_field():
     session = _session()
     session.workflow_questions.append(
         {"field_name": "DRIVER_LICENSE", "field_label": "Driver license number"}
@@ -78,17 +85,21 @@ def test_change_license_number_updates_matching_field():
         )
     )
     session.collected_answers["DRIVER_LICENSE"] = "OLD123"
-    changed = apply_chat_detail_corrections(session, "change license number to TX998877")
+    changed = await apply_chat_detail_corrections(
+        session, "change license number to TX998877", bedrock=None
+    )
     sync_checklist_from_answers(session)
     assert "DRIVER_LICENSE" in changed
     assert session.collected_answers["DRIVER_LICENSE"] == "TX998877"
 
 
-def test_change_to_without_children_updates_subtype():
+@pytest.mark.asyncio
+async def test_change_to_without_children_updates_subtype():
     session = _session()
-    changed = apply_chat_detail_corrections(
+    changed = await apply_chat_detail_corrections(
         session,
         "change case subtype from divorce with children to divorce without children",
+        bedrock=None,
     )
     sync_checklist_from_answers(session)
     assert "CHILDREN" in changed

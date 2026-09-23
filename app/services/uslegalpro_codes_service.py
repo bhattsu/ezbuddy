@@ -328,6 +328,36 @@ class USLegalProCodesService:
             return []
         return parse_filing_type_response(response)
 
+    async def resolve_case_category_codes_url(
+        self, selections: Dict[str, Any]
+    ) -> str:
+        url = str(selections.get("case_category_codes_url") or "").strip()
+        if url:
+            return url
+        state = str(selections.get("state_code") or "").strip()
+        jurisdiction_code = str(selections.get("jurisdiction_code") or "").strip()
+        if not state or not jurisdiction_code:
+            return ""
+        rows = await self.get_jurisdictions(state)
+        match = self._find_by_code(rows, jurisdiction_code)
+        if not match:
+            return ""
+        return str(match.get("case_category_codes_url") or "").strip()
+
+    async def resolve_case_type_codes_url(self, selections: Dict[str, Any]) -> str:
+        url = str(selections.get("case_type_codes_url") or "").strip()
+        if url:
+            return url
+        category_url = await self.resolve_case_category_codes_url(selections)
+        category_code = str(selections.get("case_category_code") or "").strip()
+        if not category_url or not category_code:
+            return ""
+        categories = await self.fetch_by_url(category_url)
+        match = self._find_by_code(categories, category_code)
+        if not match:
+            return ""
+        return str(match.get("case_type_codes_url") or "").strip()
+
     async def get_jurisdictions(self, state_code: str) -> List[Dict[str, Any]]:
         state = str(state_code or "").strip().lower()
         if not state:
