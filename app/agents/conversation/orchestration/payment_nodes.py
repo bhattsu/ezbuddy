@@ -20,6 +20,7 @@ from app.agents.conversation.orchestration.helpers import (
     persist_system_state,
     result_from_session,
 )
+from app.agents.utils.db_options_format import match_option
 from app.agents.conversation.orchestration.session_manager import FilingSessionManager
 from app.agents.conversation.orchestration.state import FilingGraphState
 from app.api.schemas.filing_events import FilingPhase
@@ -121,6 +122,10 @@ class CustomerNameOutput(BaseModel):
 class PaymentIdOutput(BaseModel):
     intent: Literal["provide_payment_id", "unclear"] = "unclear"
     payment_id: Optional[str] = Field(default=None)
+
+
+class EfileConfirmIntentOutput(BaseModel):
+    intent: Literal["proceed", "cancel", "unclear"] = "unclear"
 
 
 _PAYMENT_AUTHORIZATION_REPLY_PROMPT = """You classify the user's latest message during payment authorization confirmation.
@@ -1181,23 +1186,43 @@ async def _load_braintree_cards(ctx, service, state, session):
     }
 
 
+def _resolve_braintree_card_choice(
+    cards: list[Dict[str, Any]],
+    user_message: str,
+) -> Optional[Dict[str, Any]]:
+    message = str(user_message or "").strip()
+    if not message or not cards:
+        return None
+    chosen = match_court_payment_account(cards, message)
+    if chosen:
+        return chosen
+    match, _candidates = match_option(cards, message)
+    if match:
+        card_id = str(match.get("id") or match.get("code") or "").strip()
+        if card_id:
+            return _card_by_id(cards, card_id) or match
+    return None
+
+
 async def _handle_braintree_card_selection(ctx, service, state, session, user_message):
     cards = list(session.selections.get("platform_payment_cards") or [])
     if not cards:
         return await _load_braintree_cards(ctx, service, state, session)
 
-    existing_id = str(session.selections.get("braintree_payment_account_id") or "").strip()
-    selection = await _classify_braintree_card_selection(ctx, user_message, cards)
-    chosen = _card_by_id(cards, str(selection.card_id or "")) if selection.intent == "selected" else None
+    chosen = _resolve_braintree_card_choice(cards, user_message)
+    if not chosen:
+        selection = await _classify_braintree_card_selection(ctx, user_message, cards)
+        if selection.intent == "selected" and selection.card_id:
+            chosen = _card_by_id(cards, str(selection.card_id))
 
+    existing_id = str(session.selections.get("braintree_payment_account_id") or "").strip()
     if not chosen and existing_id:
         return await _show_payment_authorization_confirm(ctx, service, state, session)
 
     if not chosen:
         result = result_from_session(
             session,
-            "Please choose one of the listed Braintree cards "
-            "(reply with the list number, e.g. 1, 2, 3).\n\n"
+            "Please select a Braintree card from the dropdown below.\n\n"
             + format_braintree_cards_message(cards),
             event_kind="payment.platform",
             metadata={"platform_payment_cards": cards},
@@ -1382,6 +1407,49 @@ def _format_validation_error(exc) -> str:
     )
 
 
+async def _classify_efile_confirm_reply(
+    ctx: FilingOrchestratorContext,
+    user_message: str,
+) -> Literal["proceed", "cancel", "unclear"]:
+    message = str(user_message or "").strip()
+    if not message:
+        return "unclear"
+
+    legacy = classify_document_offer_reply(message)
+    if legacy == "no":
+        return "cancel"
+    if legacy in ("yes", "done"):
+        return "proceed"
+    if re.search(
+        r"\b(proceed|submit|efile|e-file|go ahead|send it|file it|looks good)\b",
+        message,
+        re.I,
+    ):
+        return "proceed"
+    if re.search(r"\b(cancel|stop|don'?t file|do not file|abort)\b", message, re.I):
+        return "cancel"
+
+    bedrock = ctx.bedrock
+    if bedrock is None:
+        return "unclear"
+
+    from app.core.prompts.efile_confirm import EFILE_CONFIRM_INTENT_PROMPT
+
+    prompt = format_llm_prompt(
+        EFILE_CONFIRM_INTENT_PROMPT,
+        user_message=message[:2000],
+    )
+    try:
+        parsed = await bedrock.invoke_structured_prompt(prompt, EfileConfirmIntentOutput)
+        intent = str(parsed.intent or "unclear").strip().lower()
+        if intent in {"proceed", "cancel", "unclear"}:
+            return intent  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("E-file confirm intent LLM failed: %s", exc)
+
+    return "unclear"
+
+
 async def _show_efile_preview(ctx, state, session):
     from app.services.efile_validator import EFilePayloadValidationError
     from app.services.uslegalpro_efile_service import format_efile_preview_message
@@ -1452,12 +1520,8 @@ async def _handle_efile_confirm(ctx, state, session, user_message):
     if not isinstance(preview, dict) or not preview:
         return await _show_efile_preview(ctx, state, session)
 
-    intent = classify_document_offer_reply(user_message)
-    if re.search(r"\b(confirm|submit|efile|e-file)\b", user_message or "", re.I):
-        intent = "yes"
-    if intent == "done":
-        intent = "yes"
-    if intent == "no":
+    intent = await _classify_efile_confirm_reply(ctx, user_message)
+    if intent == "cancel":
         session.selections.pop("efile_payload_preview", None)
         session.selections.pop("efile_payload_override", None)
         session.phase = FilingPhase.VERIFYING_COURT_PAYMENT
@@ -1483,10 +1547,14 @@ async def _handle_efile_confirm(ctx, state, session, user_message):
             "next_node": "persist",
         }
 
-    if intent != "yes":
+    if intent != "proceed":
+        message = (
+            "Tell me if you want to submit this e-file request or cancel "
+            "(for example, proceed with e-filing or cancel)."
+        )
         result = result_from_session(
             session,
-            format_efile_preview_message(preview),
+            message,
             event_kind="efile.confirm",
             metadata={"efile_payload_preview": preview},
         )
@@ -1507,7 +1575,7 @@ async def _handle_efile_confirm(ctx, state, session, user_message):
             session,
             "I could not submit the filing."
             + (f" {error}" if error else "")
-            + "\nReply yes to try again, or no to cancel.",
+            + "\nSay if you want to try submitting again or cancel.",
             event_kind="efile.confirm",
             metadata={"efile_payload_preview": preview},
         )

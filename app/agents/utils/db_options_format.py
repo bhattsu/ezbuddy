@@ -49,6 +49,7 @@ DROPDOWN_PHASES = frozenset(
         "existing_search_party",
         "existing_search_date",
         "verifying_court_payment",
+        "selecting_braintree_card",
     }
 )
 
@@ -69,6 +70,7 @@ _PHASE_NOUNS = {
     "existing_search_party": "party",
     "existing_search_date": "case",
     "verifying_court_payment": "payment account",
+    "selecting_braintree_card": "Braintree card",
 }
 
 
@@ -202,6 +204,7 @@ def selection_update_for_option(
         "selecting_document_type": "document_type_code",
         "selecting_filing_type": "filing_type",
         "verifying_court_payment": "court_payment_account_id",
+        "selecting_braintree_card": "braintree_payment_account_id",
     }
     key = keys.get(str(phase).lower())
     if not key:
@@ -287,7 +290,6 @@ def build_phase_selection_message(
             and not fresh_step
             and phase_key
             in {
-                "selecting_jurisdiction",
                 "selecting_case_category",
                 "selecting_case_type",
             }
@@ -359,6 +361,28 @@ def filter_selections_update(
         if match.get("county_id"):
             result["county_id"] = match["county_id"]
         return result
+
+    if phase_key == "verifying_court_payment":
+        match = _match(
+            options,
+            update.get("court_payment_account_id") or update.get("id"),
+        )
+        return (
+            {"court_payment_account_id": match.get("id") or match.get("code")}
+            if match
+            else {}
+        )
+
+    if phase_key == "selecting_braintree_card":
+        match = _match(
+            options,
+            update.get("braintree_payment_account_id") or update.get("id"),
+        )
+        return (
+            {"braintree_payment_account_id": match.get("id") or match.get("code")}
+            if match
+            else {}
+        )
 
     configs = {
         "selecting_jurisdiction": (

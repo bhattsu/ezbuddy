@@ -157,10 +157,30 @@ def looks_like_generic_legal_question(user_message: str) -> bool:
     return any(h in lower for h in legal_hints)
 
 
-def classify_intake_user_message(user_message: str) -> IntakeMessageKind:
+def classify_intake_user_message(
+    user_message: str,
+    *,
+    phase: Optional[FilingPhase] = None,
+    navigation_intent: Optional[str] = None,
+    navigation_intent_resolved: bool = False,
+) -> IntakeMessageKind:
     text = str(user_message or "").strip()
     if not text or text.startswith("["):
         return "selection"
+    if phase == FilingPhase.INTENT_PENDING:
+        nav = navigation_intent
+        if nav is None and not navigation_intent_resolved:
+            from app.agents.conversation.orchestration.helpers import (
+                classify_navigation_intent_from_text,
+            )
+
+            nav = classify_navigation_intent_from_text(text)
+        if nav in ("filing_new", "filing_existing", "check_status"):
+            return "selection"
+        if nav == "generic_legal":
+            return "generic_legal"
+        if navigation_intent_resolved:
+            return "selection"
     if looks_like_generic_legal_question(text):
         return "generic_legal"
     if looks_like_flow_help(text) or looks_like_intake_question(text):

@@ -232,7 +232,7 @@ async def _scoped_catalog_rows(
     *,
     phase: Optional[FilingPhase] = None,
 ) -> List[Dict[str, str]]:
-    """LLM court matching only for initial jurisdiction selection."""
+    """Scope catalog rows by phase; court picker shows the full state catalog."""
     from app.agents.conversation.orchestration.flow_redirects import (
         is_fresh_catalog_phase,
     )
@@ -240,7 +240,7 @@ async def _scoped_catalog_rows(
     if selections.get("jurisdiction_code"):
         return _catalog_rows_for_selected_court(rows, selections, phase=phase)
 
-    if phase is not None and phase != FilingPhase.SELECTING_JURISDICTION:
+    if phase is None or phase == FilingPhase.SELECTING_JURISDICTION:
         return rows
 
     if phase is not None and is_fresh_catalog_phase(selections, phase):
@@ -1296,22 +1296,44 @@ def strict_dropdown_intake(session: FilingSession) -> bool:
     )
 
 
-_STRICT_INTENT_OPTIONS: List[Dict[str, str]] = [
-    {"code": "filing_new", "name": "Start a new case filing"},
-    {"code": "filing_existing", "name": "File into an existing case"},
+NavigationIntentKind = Literal[
+    "filing_new", "filing_existing", "generic_legal", "check_status"
 ]
 
 
-def try_strict_intent_selection(session: FilingSession, user_message: str) -> bool:
-    from app.agents.utils.db_options_format import match_option
+def classify_navigation_intent_from_text(
+    user_message: str,
+) -> Optional[NavigationIntentKind]:
+    """Match exact dropdown labels/codes at intent_pending (free text uses LLM)."""
+    from app.services.navigation_intent_service import (
+        match_navigation_intent_from_exact_text,
+    )
 
-    match, _ = match_option(_STRICT_INTENT_OPTIONS, user_message)
-    if not match:
-        return False
-    code = str(match.get("code") or "").strip()
+    return match_navigation_intent_from_exact_text(user_message)
+
+
+def stash_case_topic_from_message(session: FilingSession, message: str) -> None:
+    """Capture divorce/custody/etc. topic from intake text when LLM intent is off."""
+    topic = infer_case_topic(message)
+    if not topic or len(topic) < 3:
+        return
+    topic_key = normalize_catalog_text(topic)
+    blocked = frozenset({"case", "status", "new", "existing", "file", "court"})
+    if topic_key in blocked:
+        return
+    prior = str(session.selections.get("case_topic") or "")
+    if topic != prior:
+        session.selections.pop("matched_court_codes", None)
+        session.selections.pop("matched_case_type_codes", None)
+    session.selections["case_topic"] = topic
+
+
+def try_strict_intent_selection(session: FilingSession, user_message: str) -> bool:
+    code = classify_navigation_intent_from_text(user_message)
     if code not in {"filing_new", "filing_existing"}:
         return False
     advance_mode_from_intent(session, code)
+    stash_case_topic_from_message(session, user_message)
     return True
 
 

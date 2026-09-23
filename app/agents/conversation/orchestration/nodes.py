@@ -30,7 +30,7 @@ from app.agents.conversation.orchestration.helpers import (
     get_session,
     handle_lookup,
     strict_dropdown_intake,
-    try_strict_intent_selection,
+    stash_case_topic_from_message,
     init_workflow_phase,
     is_affirmative_reply,
     is_new_filing_prefill_phase,
@@ -107,6 +107,7 @@ from app.services.document_template_match import (
     apply_known_case_answers,
     workflow_questions_from_db_column,
 )
+from app.services.navigation_intent_service import resolve_navigation_intent
 from app.services.process_notifications import loading_process_for_phase
 
 logger = logging.getLogger(__name__)
@@ -1012,7 +1013,31 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
                 matched_locally = True
                 llm_out = {"lookup_action": "confirm_case"}
 
-        intake_msg_kind = classify_intake_user_message(user_message)
+        pending_nav_intent = None
+        if (
+            strict_intake
+            and session.phase == FilingPhase.INTENT_PENDING
+            and user_message.strip()
+            and user_message != GREETING_USER_MESSAGE
+            and not matched_locally
+        ):
+            await ctx.notify("processing_request")
+            pending_nav_intent = await resolve_navigation_intent(
+                user_message, bedrock=ctx.bedrock
+            )
+
+        intake_msg_kind = classify_intake_user_message(
+            user_message,
+            phase=session.phase,
+            navigation_intent=pending_nav_intent,
+            navigation_intent_resolved=(
+                strict_intake
+                and session.phase == FilingPhase.INTENT_PENDING
+                and bool(user_message.strip())
+                and user_message != GREETING_USER_MESSAGE
+                and not matched_locally
+            ),
+        )
         if (
             intake_msg_kind == "flow_guide"
             and user_message.strip()
@@ -1099,16 +1124,34 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             and user_message != GREETING_USER_MESSAGE
             and not matched_locally
         ):
-            if try_strict_intent_selection(session, user_message):
+            nav_intent = pending_nav_intent
+            if nav_intent in ("filing_new", "filing_existing"):
+                advance_mode_from_intent(session, nav_intent)
+                stash_case_topic_from_message(session, user_message)
                 matched_locally = True
+                intent = nav_intent
+                if nav_intent == "filing_new" and session.selections.get("state_code"):
+                    await prefetch_court_catalog(ctx.filing_repo, session)
+            elif nav_intent == "generic_legal":
+                advance_mode_from_intent(session, "generic_legal")
+                intent = "generic_legal"
+            elif nav_intent == "check_status":
+                matched_locally = True
+                llm_out = {
+                    "lookup_action": "check_status",
+                    "lookup_params": {
+                        "envelope_id": _extract_envelope_id(user_message),
+                    },
+                }
             elif not looks_like_flow_help(user_message):
                 candidate_message = (
-                    "Please choose New case or Existing case from the dropdown."
+                    "Please tell me whether you want to file a new court case, "
+                    "look up an existing court case, check a filing status, or "
+                    "ask a general legal question."
                 )
 
         skip_nav_llm = strict_intake and session.phase in (
             FilingPhase.SELECTING_STATE,
-            FilingPhase.INTENT_PENDING,
             *SELECTION_PHASES,
         )
 

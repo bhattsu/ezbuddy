@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.conversation.orchestration.payment_nodes import (
+    _resolve_braintree_card_choice,
     BraintreeCardSelectionOutput,
     PaymentAuthorizationReplyOutput,
     _classify_braintree_card_selection,
@@ -16,6 +17,7 @@ from app.agents.conversation.orchestration.payment_nodes import (
     _handle_payment_authorization_confirm,
 )
 from app.agents.conversation.orchestration.state import FilingSession
+from app.agents.utils.db_options_format import build_selection_options_payload
 from app.api.schemas.filing_events import FilingMode, FilingPhase
 from app.services.case_type_cost_service import CaseTypeCostService
 from app.services.uslegalpro_payment_service import format_braintree_cards_message
@@ -116,11 +118,44 @@ def _mock_cost_service(monkeypatch):
     monkeypatch.setattr(CaseTypeCostService, "resolve_amount", _resolve_amount)
 
 
-def test_braintree_cards_message_includes_list_number_hint():
+def test_braintree_selection_options_payload():
+    cards = [
+        {
+            "id": "1m1xrwdt",
+            "name": "JANE DOE",
+            "code": "1m1xrwdt",
+            "label": "JANE DOE — account ending 7777 (active)",
+            "last4_digit": "7777",
+        }
+    ]
+    payload = build_selection_options_payload("selecting_braintree_card", cards)
+    assert payload is not None
+    assert payload["type"] == "dropdown"
+    assert payload["options"][0]["code"] == "1m1xrwdt"
+
+
+def test_resolve_braintree_card_from_dropdown_label():
+    cards = [
+        {
+            "id": "1m1xrwdt",
+            "name": "JANE DOE",
+            "code": "1m1xrwdt",
+            "label": "JANE DOE — account ending 7777 (active)",
+            "last4_digit": "7777",
+        }
+    ]
+    chosen = _resolve_braintree_card_choice(
+        cards, "JANE DOE — account ending 7777 (active)"
+    )
+    assert chosen is not None
+    assert chosen["id"] == "1m1xrwdt"
+
+
+def test_braintree_cards_message_prompts_dropdown():
     message = format_braintree_cards_message(
         [{"id": "1m1xrwdt", "name": "JANE DOE", "last4_digit": "7777", "is_expired": False}]
     )
-    assert "Reply with **1**" in message
+    assert "dropdown" in message.lower()
 
     multi = format_braintree_cards_message(
         [
@@ -128,7 +163,7 @@ def test_braintree_cards_message_includes_list_number_hint():
             {"id": "b", "name": "B", "last4_digit": "2222", "is_expired": False},
         ]
     )
-    assert "**1** through **2**" in multi
+    assert "dropdown" in multi.lower()
 
 
 @pytest.mark.asyncio
@@ -225,4 +260,4 @@ async def test_braintree_card_selection_then_authorize_then_efile_preview():
     assert service.authorize_calls == 1
     assert session.phase == FilingPhase.CONFIRMING_EFILE
     assert session.selections["payment_authorization_response"]["item"]["status"] == "authorized"
-    assert "This is the e-file request JSON" in output["result"].assistant_message
+    assert "Review the e-file request below" in output["result"].assistant_message

@@ -9,6 +9,14 @@ from pydantic import BaseModel, Field
 
 NavigationIntent = Literal["generic_legal", "filing_new", "filing_existing", "continue"]
 
+NavigationIntentRoute = Literal[
+    "filing_new",
+    "filing_existing",
+    "generic_legal",
+    "check_status",
+    "unclear",
+]
+
 LookupAction = Literal[
     "party_search",
     "date_search",
@@ -18,6 +26,20 @@ LookupAction = Literal[
 ]
 
 ChecklistStatus = Literal["pending", "answered", "skipped"]
+
+
+class NavigationIntentClassificationOutput(BaseModel):
+    """Short LLM routing at intent_pending (free text, no regex)."""
+
+    intent: NavigationIntentRoute = Field(
+        default="unclear",
+        description=(
+            "filing_new: start a new court case; filing_existing: look up an "
+            "existing case to file into; check_status: track a prior e-filing "
+            "submission; generic_legal: substantive legal question not asking "
+            "to file; unclear: wizard help or ambiguous."
+        ),
+    )
 
 
 class FilingNavigationOutput(BaseModel):

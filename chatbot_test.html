@@ -328,6 +328,13 @@
     .selection-actions {
       display: flex;
       justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .selection-actions.has-collapse {
+      justify-content: space-between;
+      width: 100%;
     }
     .selection-guide {
       margin-top: 0.75rem;
@@ -354,6 +361,12 @@
     }
     .selection-guide-row button {
       white-space: nowrap;
+    }
+    .selection-prompt-bar {
+      gap: 10px;
+    }
+    .selection-prompt-bar .selection-meta {
+      line-height: 1.45;
     }
 
     .composer {
@@ -1017,6 +1030,9 @@
         seeded = false;
       }
 
+      let pendingSelectionOptions = null;
+      let selectionDropdownOpen = false;
+
       function renderSelectionOptions(selectionOptions) {
         els.options.innerHTML = "";
         if (
@@ -1025,12 +1041,44 @@
           || !Array.isArray(selectionOptions.options)
           || !selectionOptions.options.length
         ) {
+          pendingSelectionOptions = null;
+          selectionDropdownOpen = false;
           els.options.classList.add("hidden");
           return;
         }
 
-        const allOptions = selectionOptions.options;
+        pendingSelectionOptions = selectionOptions;
         els.options.classList.remove("hidden");
+
+        if (!selectionDropdownOpen) {
+          const bar = document.createElement("div");
+          bar.className = "selection-picker selection-prompt-bar";
+          const label = document.createElement("div");
+          label.className = "selection-label";
+          label.textContent = selectionOptions.prompt || "This step uses a dropdown";
+          const hint = document.createElement("div");
+          hint.className = "selection-meta";
+          hint.textContent =
+            "Open the dropdown when you are ready to choose an option for this step.";
+          const actions = document.createElement("div");
+          actions.className = "selection-actions";
+          const openBtn = document.createElement("button");
+          openBtn.type = "button";
+          openBtn.className = "btn primary";
+          openBtn.textContent = "Open dropdown";
+          openBtn.addEventListener("click", () => {
+            selectionDropdownOpen = true;
+            renderSelectionOptions(pendingSelectionOptions);
+          });
+          actions.appendChild(openBtn);
+          bar.appendChild(label);
+          bar.appendChild(hint);
+          bar.appendChild(actions);
+          els.options.appendChild(bar);
+          return;
+        }
+
+        const allOptions = selectionOptions.options;
 
         const picker = document.createElement("div");
         picker.className = "selection-picker";
@@ -1081,7 +1129,15 @@
         search.addEventListener("input", () => fillSelect(search.value));
 
         const actions = document.createElement("div");
-        actions.className = "selection-actions";
+        actions.className = "selection-actions has-collapse";
+        const collapseBtn = document.createElement("button");
+        collapseBtn.type = "button";
+        collapseBtn.className = "btn ghost";
+        collapseBtn.textContent = "Hide dropdown";
+        collapseBtn.addEventListener("click", () => {
+          selectionDropdownOpen = false;
+          renderSelectionOptions(pendingSelectionOptions);
+        });
         const submit = document.createElement("button");
         submit.type = "button";
         submit.className = "btn primary";
@@ -1100,60 +1156,28 @@
           sendMessage();
         });
 
+        actions.appendChild(collapseBtn);
         actions.appendChild(submit);
-
-        const guideBlock = document.createElement("div");
-        guideBlock.className = "selection-guide";
-        const guideLabel = document.createElement("label");
-        guideLabel.textContent = "Need help with this step?";
-        const guideRow = document.createElement("div");
-        guideRow.className = "selection-guide-row";
-        const guideInput = document.createElement("input");
-        guideInput.type = "text";
-        guideInput.className = "selection-guide-input";
-        guideInput.placeholder = "e.g. What should I do now?";
-        guideInput.autocomplete = "off";
-        const guideBtn = document.createElement("button");
-        guideBtn.type = "button";
-        guideBtn.className = "btn";
-        guideBtn.textContent = "Get guide";
-        guideBtn.addEventListener("click", () => {
-          const q = guideInput.value.trim();
-          if (!q) {
-            setStatus("Type a question about this step first.", "error");
-            return;
-          }
-          if (waitingForResponse) {
-            setStatus("Please wait for the assistant to respond.", "error");
-            return;
-          }
-          els.message.value = q;
-          sendMessage();
-          guideInput.value = "";
-        });
-        guideInput.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter") {
-            ev.preventDefault();
-            guideBtn.click();
-          }
-        });
-        guideRow.appendChild(guideInput);
-        guideRow.appendChild(guideBtn);
-        guideBlock.appendChild(guideLabel);
-        guideBlock.appendChild(guideRow);
 
         picker.appendChild(label);
         picker.appendChild(meta);
         picker.appendChild(search);
         picker.appendChild(select);
         picker.appendChild(actions);
-        picker.appendChild(guideBlock);
         els.options.appendChild(picker);
         fillSelect("");
         search.focus();
       }
 
       function clearSelectionOptions() {
+        pendingSelectionOptions = null;
+        selectionDropdownOpen = false;
+        els.options.innerHTML = "";
+        els.options.classList.add("hidden");
+      }
+
+      function collapseSelectionOptionsForSend() {
+        selectionDropdownOpen = false;
         els.options.innerHTML = "";
         els.options.classList.add("hidden");
       }
@@ -1210,6 +1234,7 @@
           if (payload.phase) els.stateCode.textContent = `phase ${payload.phase}`;
           syncUploadFromPhase(payload.phase);
           const opts = payload.selection_options;
+          selectionDropdownOpen = false;
           if (
             opts
             && payload.phase
@@ -1472,7 +1497,7 @@
 
         addBubble("user", text || `[files: ${selectedFiles.map((f) => f.name).join(", ")}]`);
         els.message.value = "";
-        clearSelectionOptions();
+        collapseSelectionOptionsForSend();
         setTyping(true);
         lockComposer();
 

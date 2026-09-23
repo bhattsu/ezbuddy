@@ -42,8 +42,8 @@ class EFileSubmitResult:
 def format_efile_preview_message(payload: Dict[str, Any]) -> str:
     body = json.dumps(payload or {}, indent=2, ensure_ascii=False)
     return (
-        "This is the e-file request JSON. "
-        "Reply yes if we should e-file the case like this, or no to cancel.\n\n"
+        "Review the e-file request below. When you are ready to submit, say so in "
+        "your own words (for example, proceed with e-filing).\n\n"
         f"{body}"
     )
 

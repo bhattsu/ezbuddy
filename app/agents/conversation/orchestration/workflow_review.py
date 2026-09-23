@@ -109,15 +109,13 @@ def format_workflow_review_message(
         f"{prefix}I have collected the following details for your document:\n\n"
         f"{summary}\n\n"
         "Please review the information above. If anything needs to be changed, tell me "
-        'what to update (for example, "change the phone number to 555-0100", or say '
-        "you want to change the court or case type). When everything looks correct, "
-        "reply yes to generate your document."
+        'what to update (for example, "change the phone number to 555-0100"). '
+        "When everything looks correct, reply yes to generate your document."
     ).strip()
 
 
 def review_decline_message() -> str:
     return (
         "What would you like to change? You can update any answer "
-        '(for example, "change the address to 123 Main St"), or say you want to '
-        "change the court, case category, or case type."
+        '(for example, "change the address to 123 Main St").'
     )

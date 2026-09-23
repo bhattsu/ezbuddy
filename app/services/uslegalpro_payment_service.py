@@ -154,16 +154,10 @@ def format_braintree_cards_message(cards: List[Dict[str, Any]]) -> str:
                 f"   expired: {expired}",
             ]
         )
-    if len(cards) == 1:
-        lines.append(
-            "Which Braintree card should we use for filing authorization?\n"
-            "Reply with **1** to select this card."
-        )
-    else:
-        lines.append(
-            "Which Braintree card should we use for filing authorization?\n"
-            f"Reply with the list number (**1** through **{len(cards)}**) to select a card."
-        )
+    lines.append(
+        "Select the Braintree card to use for filing authorization from the "
+        "dropdown below."
+    )
     return "\n".join(lines)
 
 
