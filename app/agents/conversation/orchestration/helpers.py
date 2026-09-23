@@ -991,6 +991,19 @@ def advance_phase_after_selections(session: FilingSession) -> None:
             session.phase = FilingPhase.OFFERING_DOCUMENTS
 
 
+def _is_placeholder_filer_option(row: Dict[str, Any]) -> bool:
+    name = str(row.get("name") or "").strip().lower()
+    code = str(row.get("code") or "").strip().lower()
+    placeholders = {
+        "not applicable",
+        "n/a",
+        "na",
+        "none",
+        "not_applicable",
+    }
+    return name in placeholders or code in placeholders
+
+
 def auto_pick_single_option(
     session: FilingSession, phase: FilingPhase, options: List[Dict[str, Any]]
 ) -> bool:
@@ -1006,6 +1019,9 @@ def auto_pick_single_option(
     row = options[0] if isinstance(options[0], dict) else {}
     code = str(row.get("code") or "").strip()
     if not code:
+        return False
+
+    if phase == FilingPhase.SELECTING_FILER_TYPE and _is_placeholder_filer_option(row):
         return False
 
     if phase == FilingPhase.SELECTING_FILER_TYPE:

@@ -1507,18 +1507,28 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         # A locally matched selection produces no LLM text, so re-show the
         # current phase options if nothing else filled the reply.
         if not assistant_message.strip():
-            built = build_phase_selection_message(
-                session.phase.value, session.selections, db_options
-            )
-            if is_session_start and session.phase == FilingPhase.SELECTING_STATE:
-                assistant_message = sanitize_assistant_text(
-                    WELCOME_SELECT_STATE_MESSAGE
-                    + (" " + built if built else "")
+            if session.phase in (
+                FilingPhase.OFFERING_DOCUMENTS,
+                FilingPhase.AWAITING_DOCUMENT_UPLOAD,
+            ):
+                from app.agents.conversation.orchestration.document_nodes import (
+                    _offer_message,
                 )
+
+                assistant_message = sanitize_assistant_text(_offer_message(session))
             else:
-                assistant_message = sanitize_assistant_text(
-                    built or "Please choose one of the options listed above."
+                built = build_phase_selection_message(
+                    session.phase.value, session.selections, db_options
                 )
+                if is_session_start and session.phase == FilingPhase.SELECTING_STATE:
+                    assistant_message = sanitize_assistant_text(
+                        WELCOME_SELECT_STATE_MESSAGE
+                        + (" " + built if built else "")
+                    )
+                else:
+                    assistant_message = sanitize_assistant_text(
+                        built or "Please choose one of the options listed above."
+                    )
 
         next_node = "persist"
         if (
@@ -1528,8 +1538,13 @@ def build_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
         ):
             next_node = "init_workflow"
         elif (
-            phase_before == FilingPhase.SELECTING_DOCUMENT_TYPE
-            and session.phase == FilingPhase.OFFERING_DOCUMENTS
+            session.phase == FilingPhase.OFFERING_DOCUMENTS
+            and phase_before
+            in (
+                FilingPhase.SELECTING_DOCUMENT_TYPE,
+                FilingPhase.SELECTING_FILER_TYPE,
+                FilingPhase.SELECTING_FILING_TYPE,
+            )
         ):
             next_node = "offer_documents"
         elif (

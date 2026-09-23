@@ -61,6 +61,10 @@ SETUP_PAYMENT_ID_PROMPT = (
     "Use only letters, numbers, hyphens, and underscores "
     "(for example: COM-ULP-DEMO-2)."
 )
+INVALID_PAYMENT_ID_MESSAGE = (
+    "That payment ID was not found. Please check the ID and enter the "
+    "correct Braintree payment ID."
+)
 CUSTOMER_NAME_PROMPT = (
     "Please enter your full name as it appears on your payment card."
 )
@@ -837,6 +841,88 @@ async def _prompt_platform_payment_id(ctx, state, session):
     }
 
 
+async def _prompt_payment_id_not_found(
+    ctx,
+    state,
+    session,
+    verification: Dict[str, Any],
+):
+    _clear_awaiting_setup_payment_id(session)
+    _clear_awaiting_customer_name(session)
+    _clear_payment_setup_pending(session)
+    session.selections.pop(_PAYMENT_SETUP_CUSTOMER_KEY, None)
+    session.selections["platform_payment_verified"] = False
+    session.selections["platform_payment_status"] = verification.get("status")
+    message = f"{INVALID_PAYMENT_ID_MESSAGE}\n{PAYMENT_ID_PROMPT}"
+    result = result_from_session(
+        session,
+        message,
+        event_kind="payment.platform",
+        metadata={"platform_payment": verification},
+    )
+    await persist_system_state(ctx.conversation_repo, session)
+    return {
+        **state,
+        "phase": session.phase.value,
+        "result": result,
+        "next_node": "persist",
+    }
+
+
+async def _apply_platform_payment_verification(
+    ctx,
+    service: USLegalProPaymentService,
+    state,
+    session,
+    payment_id: str,
+    verification: Dict[str, Any],
+):
+    session.selections["platform_payment_id"] = payment_id
+    session.selections["platform_payment_customer_id"] = verification.get("customer_id")
+    session.selections["platform_payment_status"] = verification.get("status")
+    session.selections["platform_payment_verified"] = bool(verification.get("verified"))
+    _clear_awaiting_setup_payment_id(session)
+    _clear_awaiting_customer_name(session)
+
+    if not verification.get("verified"):
+        if verification.get("status") == "not_found":
+            session.selections.pop(_PAYMENT_SETUP_CUSTOMER_KEY, None)
+            return await _prompt_payment_id_not_found(
+                ctx, state, session, verification
+            )
+        if verification.get("status") == "ended":
+            return await _redirect_to_payment_setup(
+                ctx,
+                service,
+                state,
+                session,
+                payment_id,
+                verification,
+                create_customer=False,
+            )
+        result = result_from_session(
+            session,
+            str(verification.get("message") or PAYMENT_ID_PROMPT),
+            event_kind="payment.platform",
+            metadata={"platform_payment": verification},
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
+    return await _load_court_payment_accounts(
+        ctx,
+        service,
+        state,
+        session,
+        prefix=str(verification.get("message") or "Payment is verified."),
+    )
+
+
 async def _prompt_setup_payment_id_again(ctx, state, session):
     result = result_from_session(
         session,
@@ -878,19 +964,56 @@ async def _handle_awaiting_setup_payment_id(ctx, service, state, session, user_m
     id_reply = await _classify_payment_id_reply(ctx, user_message)
     payment_id = str(id_reply.payment_id or "").strip()
     if id_reply.intent != "provide_payment_id" or not payment_id:
-        return await _prompt_setup_payment_id_again(ctx, state, session)
+        return await _prompt_platform_payment_id(ctx, state, session)
 
-    verification = session.selections.get(_PENDING_VERIFICATION_KEY) or {
-        "verified": False,
-        "status": "not_found",
-    }
-    session.selections[_PAYMENT_SETUP_CUSTOMER_KEY] = payment_id
-    session.selections["platform_payment_id"] = payment_id
-    _clear_awaiting_setup_payment_id(session)
-    return await _begin_payment_setup(ctx, service, state, session, verification)
+    await ctx.notify("verifying_platform_payment")
+    try:
+        verification = await service.verify_platform_payment(payment_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Platform payment verification failed (setup retry)")
+        result = result_from_session(
+            session,
+            f"I could not verify that payment ID. {exc}\n{PAYMENT_ID_PROMPT}",
+            event_kind="payment.platform",
+        )
+        await persist_system_state(ctx.conversation_repo, session)
+        return {
+            **state,
+            "phase": session.phase.value,
+            "result": result,
+            "next_node": "persist",
+        }
+
+    return await _apply_platform_payment_verification(
+        ctx, service, state, session, payment_id, verification
+    )
 
 
 async def _handle_awaiting_customer_name(ctx, service, state, session, user_message):
+    payment_id_in_message = extract_payment_id(user_message)
+    if payment_id_in_message:
+        _clear_awaiting_customer_name(session)
+        await ctx.notify("verifying_platform_payment")
+        try:
+            verification = await service.verify_platform_payment(payment_id_in_message)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Platform payment verification failed (name phase)")
+            result = result_from_session(
+                session,
+                f"I could not verify that payment ID. {exc}\n{PAYMENT_ID_PROMPT}",
+                event_kind="payment.platform",
+            )
+            await persist_system_state(ctx.conversation_repo, session)
+            return {
+                **state,
+                "phase": session.phase.value,
+                "result": result,
+                "next_node": "persist",
+            }
+        return await _apply_platform_payment_verification(
+            ctx, service, state, session, payment_id_in_message, verification
+        )
+
     name_reply = await _classify_customer_name_reply(ctx, user_message)
     full_name = str(name_reply.full_name or "").strip()
     if name_reply.intent != "provide_name" or not full_name:
@@ -981,51 +1104,8 @@ async def _handle_platform_payment(ctx, service, state, session, user_message):
             "next_node": "persist",
         }
 
-    session.selections["platform_payment_id"] = payment_id
-    session.selections["platform_payment_customer_id"] = verification.get("customer_id")
-    session.selections["platform_payment_status"] = verification.get("status")
-    session.selections["platform_payment_verified"] = bool(verification.get("verified"))
-
-    if not verification.get("verified"):
-        if verification.get("status") == "not_found":
-            session.selections.pop(_PAYMENT_SETUP_CUSTOMER_KEY, None)
-            return await _begin_payment_setup(
-                ctx,
-                service,
-                state,
-                session,
-                verification,
-            )
-        if verification.get("status") == "ended":
-            return await _redirect_to_payment_setup(
-                ctx,
-                service,
-                state,
-                session,
-                payment_id,
-                verification,
-                create_customer=False,
-            )
-        result = result_from_session(
-            session,
-            str(verification.get("message") or PAYMENT_ID_PROMPT),
-            event_kind="payment.platform",
-            metadata={"platform_payment": verification},
-        )
-        await persist_system_state(ctx.conversation_repo, session)
-        return {
-            **state,
-            "phase": session.phase.value,
-            "result": result,
-            "next_node": "persist",
-        }
-
-    return await _load_court_payment_accounts(
-        ctx,
-        service,
-        state,
-        session,
-        prefix=str(verification.get("message") or "Payment is verified."),
+    return await _apply_platform_payment_verification(
+        ctx, service, state, session, payment_id, verification
     )
 
 
