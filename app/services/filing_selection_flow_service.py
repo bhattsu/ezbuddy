@@ -244,14 +244,11 @@ class FilingSelectionFlowService:
             self.filing_repo, session, bedrock=None
         )
 
-        # Auto-skip single-option filer / filing type (same as chat connect path).
+        # Auto-skip single-option filer_type only (filing_type always shows dropdown).
         for _ in range(4):
             if session.selections.get("template_questions_ready"):
                 break
-            if session.phase not in (
-                FilingPhase.SELECTING_FILER_TYPE,
-                FilingPhase.SELECTING_FILING_TYPE,
-            ):
+            if session.phase != FilingPhase.SELECTING_FILER_TYPE:
                 break
             next_options = await options_for_response(
                 self.filing_repo,

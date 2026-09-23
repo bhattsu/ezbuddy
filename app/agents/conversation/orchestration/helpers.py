@@ -689,9 +689,7 @@ async def options_for_response(
 ) -> List[Dict[str, Any]]:
     if override is not None:
         return override
-    # Auto-skip 1-option phases (filer_type, filing_type). Loop a few times
-    # in case a chain of single-option phases collapses (e.g. filer_type has
-    # a single Attorney entry AND filing_type is just EFile).
+    # Auto-skip 1-option filer_type only; filing_type always shows a dropdown.
     for _ in range(4):
         phase = session.phase
         options = await load_db_options(
@@ -703,10 +701,10 @@ async def options_for_response(
             bedrock=bedrock,
             auth_token=auth_token,
         )
-        if phase in (
-            FilingPhase.SELECTING_FILER_TYPE,
-            FilingPhase.SELECTING_FILING_TYPE,
-        ) and auto_pick_single_option(session, phase, options):
+        if (
+            phase == FilingPhase.SELECTING_FILER_TYPE
+            and auto_pick_single_option(session, phase, options)
+        ):
             continue
         return options
     return []
