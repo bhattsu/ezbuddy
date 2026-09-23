@@ -18,6 +18,20 @@ fetch_state_by_code: |
   FROM configuration.states s
   WHERE s.code = $1
   LIMIT 1
+upsert_state: |
+  INSERT INTO configuration.states (code, name, is_active)
+  VALUES ($1, $2, TRUE)
+  ON CONFLICT (code) DO UPDATE
+  SET name = EXCLUDED.name,
+      is_active = TRUE,
+      updated_at = CURRENT_TIMESTAMP
+  RETURNING
+      id,
+      code,
+      name,
+      is_active,
+      created_at,
+      updated_at
 fetch_counties_by_state: |
   SELECT
       c.id   AS county_id,
@@ -406,7 +420,8 @@ insert_document_template: |
       case_type,
       case_subtype,
       field_mapping,
-      sample_input
+      sample_input,
+      questions
   )
   VALUES (
       $1::uuid,
@@ -421,7 +436,8 @@ insert_document_template: |
       $9,
       $10,
       $11,
-      $12
+      $12,
+      $13
   )
   RETURNING
       id,
@@ -437,7 +453,8 @@ insert_document_template: |
       case_type,
       case_subtype,
       field_mapping,
-      sample_input
+      sample_input,
+      questions
 insert_template_version: |
   INSERT INTO configuration.template_versions (
       id,
@@ -465,3 +482,50 @@ insert_template_version: |
       s3_key,
       effective_from,
       effective_to
+
+# Case type filing costs for payment authorization
+list_case_type_filing_costs: |
+  SELECT
+      id,
+      case_type,
+      state_code,
+      cost,
+      currency,
+      is_active,
+      created_at,
+      updated_at
+  FROM configuration.case_type_filing_costs
+  WHERE is_active = TRUE
+    AND ($1::text IS NULL OR state_code IS NULL OR LOWER(state_code) = LOWER($1))
+  ORDER BY case_type, state_code NULLS FIRST
+
+upsert_case_type_filing_cost: |
+  INSERT INTO configuration.case_type_filing_costs (
+      case_type,
+      state_code,
+      cost,
+      currency,
+      is_active
+  )
+  VALUES (
+      $1,
+      NULLIF(BTRIM($2::text), ''),
+      $3::numeric,
+      COALESCE(NULLIF(BTRIM($4::text), ''), 'USD'),
+      COALESCE($5::boolean, TRUE)
+  )
+  ON CONFLICT (case_type, state_code)
+  DO UPDATE SET
+      cost = EXCLUDED.cost,
+      currency = EXCLUDED.currency,
+      is_active = EXCLUDED.is_active,
+      updated_at = CURRENT_TIMESTAMP
+  RETURNING
+      id,
+      case_type,
+      state_code,
+      cost,
+      currency,
+      is_active,
+      created_at,
+      updated_at

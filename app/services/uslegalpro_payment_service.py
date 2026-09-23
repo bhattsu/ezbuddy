@@ -139,6 +139,28 @@ def format_court_payment_account(item: Dict[str, Any], today: Optional[date] = N
     }
 
 
+def format_braintree_cards_message(cards: List[Dict[str, Any]]) -> str:
+    if not cards:
+        return "No Braintree payment cards were found on your account."
+    lines = ["Braintree payment cards:"]
+    for index, card in enumerate(cards, start=1):
+        expired = "yes" if card.get("is_expired") else "no"
+        lines.extend(
+            [
+                f"{index}. id: {card.get('id') or ''}",
+                f"   name: {card.get('name') or ''}",
+                f"   card type: {card.get('card_type') or ''}",
+                f"   last4: {card.get('last4_digit') or ''}",
+                f"   expired: {expired}",
+            ]
+        )
+    lines.append(
+        "Select the Braintree card to use for filing authorization from the "
+        "dropdown below."
+    )
+    return "\n".join(lines)
+
+
 def format_court_payment_message(accounts: List[Dict[str, Any]]) -> str:
     if not accounts:
         return "No court payment accounts were found."
@@ -269,6 +291,27 @@ class USLegalProPaymentService:
             if _is_route_missing(exc):
                 raise self._route_error(
                     client, settings.USLEGALPRO_CREDIT_CARDS_PATH
+                ) from exc
+            raise
+
+    async def authorize_payment(
+        self,
+        *,
+        payment_account_id: str,
+        amount: str,
+        additional_info: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        client = self._client(payment=True)
+        try:
+            return await client.authorize_payment(
+                payment_account_id=payment_account_id,
+                amount=amount,
+                additional_info=additional_info,
+            )
+        except USLegalProApiError as exc:
+            if _is_route_missing(exc):
+                raise self._route_error(
+                    client, settings.USLEGALPRO_AUTHORIZE_PATH
                 ) from exc
             raise
 

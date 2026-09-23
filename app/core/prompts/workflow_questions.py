@@ -37,8 +37,11 @@ Prior request/response turns for this session. Keep using those answers.
 {user_message}
 
 Rules:
-- Record every usable answer from the user message into answers_update, keyed by field_name.
-- When a pending field includes cluster_fields, map the user's reply onto every field in that cluster when the answer clearly covers them; otherwise fill the primary field_name.
+- answers_update keys MUST be field_name values copied exactly from "Form fields still open". Never invent or guess field names.
+- On each turn, fill at most the field(s) the user actually answered in this message. Do NOT shift values across unrelated fields (dates go to date fields, names to name fields, addresses to address fields).
+- If only one field is open, put the user's entire reply in that field_name only.
+- When a pending field includes cluster_fields, map the user's reply onto cluster fields only when the user clearly provided split values for each (e.g. full address broken into street, city, state, zip). Otherwise fill only the primary field_name.
+- Do not copy example or placeholder data from the prompt into answers_update.
 - Then choose the single most useful remaining field and ask it in natural language.
 - Skip unwanted fields: if they do not apply given the case type or prior answers, add them to skipped_fields and mark checklist_updates status "skipped".
   Examples: child / custody / child-support fields when the case has no children; military, attorney, notary, clerk, or "if applicable" fields after the user said no or not applicable; duplicates of a fact already answered.

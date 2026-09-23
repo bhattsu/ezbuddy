@@ -75,6 +75,19 @@ class USLegalProApiClient:
     async def get_credit_cards(self, customer_id: str) -> dict[str, Any]:
         return await self._client.get_credit_cards(customer_id)
 
+    async def authorize_payment(
+        self,
+        *,
+        payment_account_id: str,
+        amount: str,
+        additional_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self._client.authorize_payment(
+            payment_account_id=payment_account_id,
+            amount=amount,
+            additional_info=additional_info,
+        )
+
     async def generate_documents(
         self, state: str, payload: dict[str, Any]
     ) -> dict[str, Any]:

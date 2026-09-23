@@ -9,6 +9,28 @@ MAX_PROMPT_OPTIONS = 60
 MAX_LISTED_OPTIONS = 40
 _HEAVY_KEYS = frozenset({"raw", "links", "field_mapping"})
 
+_LLM_SELECTION_OMIT_KEYS = frozenset(
+    {
+        "extracted_form_questions",
+        "extracted_form_text",
+        "matched_court_codes",
+        "case_intent",
+    }
+)
+
+
+def slim_selections_for_llm(selections: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop cached catalog lists and heavy blobs before navigation LLM prompts."""
+    slim: Dict[str, Any] = {}
+    for key, value in (selections or {}).items():
+        if key in _LLM_SELECTION_OMIT_KEYS or str(key).startswith("cached_"):
+            continue
+        if str(key).startswith("selected_") and isinstance(value, dict):
+            continue
+        slim[key] = value
+    return slim
+
+
 DROPDOWN_PHASES = frozenset(
     {
         "selecting_state",
@@ -27,6 +49,7 @@ DROPDOWN_PHASES = frozenset(
         "existing_search_party",
         "existing_search_date",
         "verifying_court_payment",
+        "selecting_braintree_card",
     }
 )
 
@@ -47,6 +70,7 @@ _PHASE_NOUNS = {
     "existing_search_party": "party",
     "existing_search_date": "case",
     "verifying_court_payment": "payment account",
+    "selecting_braintree_card": "Braintree card",
 }
 
 
@@ -180,6 +204,7 @@ def selection_update_for_option(
         "selecting_document_type": "document_type_code",
         "selecting_filing_type": "filing_type",
         "verifying_court_payment": "court_payment_account_id",
+        "selecting_braintree_card": "braintree_payment_account_id",
     }
     key = keys.get(str(phase).lower())
     if not key:
@@ -222,6 +247,11 @@ def format_db_options_summary(
     return prefix + "\n" + "\n".join(f"- {label}" for label in shown)
 
 
+def _fresh_catalog_step(selections: Dict[str, Any], phase_key: str) -> bool:
+    fresh = str(selections.get("_fresh_catalog_phase") or "").strip().lower()
+    return bool(fresh) and fresh == phase_key
+
+
 def build_phase_selection_message(
     phase: str,
     selections: Dict[str, Any],
@@ -232,13 +262,19 @@ def build_phase_selection_message(
     noun = _PHASE_NOUNS.get(phase_key)
     if not noun:
         return None
+    fresh_step = _fresh_catalog_step(selections, phase_key)
     if not labels:
         topic = str(selections.get("case_topic") or "").strip()
-        if topic and phase_key in {
-            "selecting_jurisdiction",
-            "selecting_case_category",
-            "selecting_case_type",
-        }:
+        if (
+            topic
+            and not fresh_step
+            and phase_key
+            in {
+                "selecting_jurisdiction",
+                "selecting_case_category",
+                "selecting_case_type",
+            }
+        ):
             return (
                 f"I couldn't find any {noun} options for {topic} in the selected state. "
                 "Please describe the case type in different words, or mention your county."
@@ -249,11 +285,15 @@ def build_phase_selection_message(
     if phase_key in DROPDOWN_PHASES:
         topic = str(selections.get("case_topic") or "").strip()
         topic_prefix = ""
-        if topic and phase_key in {
-            "selecting_jurisdiction",
-            "selecting_case_category",
-            "selecting_case_type",
-        }:
+        if (
+            topic
+            and not fresh_step
+            and phase_key
+            in {
+                "selecting_case_category",
+                "selecting_case_type",
+            }
+        ):
             topic_prefix = f"These options match {topic}. "
         if len(labels) == 1:
             return f"{topic_prefix}Please select the {noun}: {labels[0]}"
@@ -321,6 +361,28 @@ def filter_selections_update(
         if match.get("county_id"):
             result["county_id"] = match["county_id"]
         return result
+
+    if phase_key == "verifying_court_payment":
+        match = _match(
+            options,
+            update.get("court_payment_account_id") or update.get("id"),
+        )
+        return (
+            {"court_payment_account_id": match.get("id") or match.get("code")}
+            if match
+            else {}
+        )
+
+    if phase_key == "selecting_braintree_card":
+        match = _match(
+            options,
+            update.get("braintree_payment_account_id") or update.get("id"),
+        )
+        return (
+            {"braintree_payment_account_id": match.get("id") or match.get("code")}
+            if match
+            else {}
+        )
 
     configs = {
         "selecting_jurisdiction": (

@@ -152,8 +152,8 @@ def test_format_efile_success_message():
 
 def test_format_efile_preview_message_asks_to_confirm():
     message = format_efile_preview_message({"data": {"reference_id": "DRAFT-2026-10034"}})
-    assert "This is the e-file request JSON" in message
-    assert "yes if we should e-file" in message
+    assert "Review the e-file request below" in message
+    assert "proceed with e-filing" in message.lower()
     assert "DRAFT-2026-10034" in message
 
 

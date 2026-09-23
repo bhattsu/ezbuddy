@@ -36,6 +36,7 @@ from app.services.document_template_match import match_document_templates
 from app.services.legal_filing_repository import LegalFilingRepository
 from app.adapters.uslegalpro.tokens import resolve_auth_token
 from app.services.operational_user_repository import OperationalUserRepository
+from app.config.settings import get_settings
 from app.services.uslegalpro_codes_service import USLegalProCodesService
 
 logger = logging.getLogger(__name__)
@@ -203,8 +204,14 @@ async def _catalog_rows_for_session(
 def _catalog_rows_for_selected_court(
     rows: List[Dict[str, str]],
     selections: Dict[str, Any],
+    *,
+    phase: Optional[FilingPhase] = None,
 ) -> List[Dict[str, str]]:
     """Filter cached catalog rows to the chosen court/category — no LLM."""
+    from app.agents.conversation.orchestration.flow_redirects import (
+        is_fresh_catalog_phase,
+    )
+
     j_code = str(selections.get("jurisdiction_code") or "").strip()
     if not j_code:
         return rows
@@ -212,8 +219,9 @@ def _catalog_rows_for_selected_court(
     c_code = str(selections.get("case_category_code") or "").strip()
     if c_code:
         court_rows = filter_court_category(court_rows, j_code, c_code)
+    skip_topic = phase is not None and is_fresh_catalog_phase(selections, phase)
     topic = str(selections.get("case_topic") or "").strip()
-    if topic:
+    if topic and not skip_topic:
         court_rows = search_catalog_rows(court_rows, topic)
     return court_rows
 
@@ -225,11 +233,18 @@ async def _scoped_catalog_rows(
     *,
     phase: Optional[FilingPhase] = None,
 ) -> List[Dict[str, str]]:
-    """LLM court matching only for initial jurisdiction selection."""
-    if selections.get("jurisdiction_code"):
-        return _catalog_rows_for_selected_court(rows, selections)
+    """Scope catalog rows by phase; court picker shows the full state catalog."""
+    from app.agents.conversation.orchestration.flow_redirects import (
+        is_fresh_catalog_phase,
+    )
 
-    if phase is not None and phase != FilingPhase.SELECTING_JURISDICTION:
+    if selections.get("jurisdiction_code"):
+        return _catalog_rows_for_selected_court(rows, selections, phase=phase)
+
+    if phase is None or phase == FilingPhase.SELECTING_JURISDICTION:
+        return rows
+
+    if phase is not None and is_fresh_catalog_phase(selections, phase):
         return rows
 
     topic = str(selections.get("case_topic") or "").strip()
@@ -267,6 +282,8 @@ async def capture_new_case_topic(
     bedrock: Optional[Bedrock] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> None:
+    if strict_dropdown_intake(session):
+        return
     message = str(user_message or "").strip()
     if not message:
         return
@@ -322,6 +339,10 @@ async def apply_catalog_court_from_text(
     bedrock: Optional[Bedrock] = None,
 ) -> None:
     """If the user named a unique court in natural language, store its code."""
+    if strict_dropdown_intake(session):
+        return
+    if _use_live_tyler_codes():
+        return
     if session.mode != FilingMode.FILING_NEW:
         return
     if session.phase not in (
@@ -355,6 +376,8 @@ async def apply_catalog_shortcuts(
     bedrock: Optional[Bedrock] = None,
 ) -> None:
     """Skip unique category/type after a court is chosen from the catalog."""
+    if _use_live_tyler_codes():
+        return
     if session.mode != FilingMode.FILING_NEW:
         return
     rows = await _catalog_rows_for_session(filing_repo, session.selections)
@@ -426,10 +449,25 @@ async def prefetch_court_catalog(
     session: FilingSession,
 ) -> None:
     """Load and cache flattened court rows after the shared state step."""
+    if get_settings().FILING_USE_LIVE_TYLER_CODES:
+        return
     state_code = str(session.selections.get("state_code") or "")
     if not state_code:
         return
     await get_court_catalog().rows_for_state(state_code, filing_repo)
+
+
+def _use_live_tyler_codes() -> bool:
+    return bool(get_settings().FILING_USE_LIVE_TYLER_CODES)
+
+
+def _codes_service_for(
+    codes_service: Optional[USLegalProCodesService],
+    auth_token: Optional[str],
+) -> USLegalProCodesService:
+    if str(auth_token or "").strip():
+        return USLegalProCodesService.for_auth_token(str(auth_token).strip())
+    return codes_service or USLegalProCodesService()
 
 
 async def load_db_options(
@@ -441,9 +479,8 @@ async def load_db_options(
     bedrock: Optional[Bedrock] = None,
     auth_token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    service = codes_service or USLegalProCodesService()
-    if mode == FilingMode.FILING_EXISTING and str(auth_token or "").strip():
-        service = USLegalProCodesService.for_auth_token(str(auth_token).strip())
+    service = _codes_service_for(codes_service, auth_token)
+    live_tyler = _use_live_tyler_codes()
     if phase in (FilingPhase.GREETING, FilingPhase.INTENT_PENDING):
         if selections.get("state_code"):
             return []
@@ -456,7 +493,10 @@ async def load_db_options(
     if phase == FilingPhase.SELECTING_COUNTY:
         return await filing_repo.get_counties(selections.get("state_code"))
     if phase == FilingPhase.SELECTING_JURISDICTION:
-        if mode == FilingMode.FILING_NEW:
+        if (
+            mode == FilingMode.FILING_NEW
+            and not live_tyler
+        ):
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
                 scoped = await _scoped_catalog_rows(
@@ -465,35 +505,50 @@ async def load_db_options(
                 return jurisdiction_options(scoped)
         if service and selections.get("state_code"):
             return await service.get_jurisdictions(selections["state_code"])
-        return await filing_repo.get_jurisdictions_for_county(
-            selections.get("state_code"),
-            county_name=selections.get("county_name"),
-            county_id=selections.get("county_id"),
-        )
+        if not live_tyler:
+            return await filing_repo.get_jurisdictions_for_county(
+                selections.get("state_code"),
+                county_name=selections.get("county_name"),
+                county_id=selections.get("county_id"),
+            )
+        return []
     if phase == FilingPhase.EXISTING_SELECTING_JURISDICTION:
         if service and selections.get("state_code"):
             return await service.get_jurisdictions(selections["state_code"])
         return []
     if phase == FilingPhase.SELECTING_CASE_CATEGORY:
-        if mode == FilingMode.FILING_NEW:
+        if mode == FilingMode.FILING_NEW and not live_tyler:
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
-                return category_options(_catalog_rows_for_selected_court(rows, selections))
+                return category_options(
+                    _catalog_rows_for_selected_court(rows, selections, phase=phase)
+                )
+        if service:
+            url = await service.resolve_case_category_codes_url(selections)
+            if url:
+                return await service.get_case_categories_from_jurisdiction_link(url)
         url = selections.get("case_category_codes_url")
         if service and url:
             return await service.get_case_categories_from_jurisdiction_link(url)
         return []
     if phase == FilingPhase.SELECTING_CASE_TYPE:
-        if mode == FilingMode.FILING_NEW:
+        if mode == FilingMode.FILING_NEW and not live_tyler:
             rows = await _catalog_rows_for_session(filing_repo, selections)
             if rows:
-                return case_type_options(_catalog_rows_for_selected_court(rows, selections))
+                return case_type_options(
+                    _catalog_rows_for_selected_court(rows, selections, phase=phase)
+                )
+        if service:
+            url = await service.resolve_case_type_codes_url(selections)
+            if url:
+                return await service.get_case_types_from_category_link(url)
         url = selections.get("case_type_codes_url")
         if service and url:
             return await service.get_case_types_from_category_link(url)
-        code = selections.get("jurisdiction_code")
-        if code:
-            return await filing_repo.get_workflows_for_jurisdiction(code)
+        if not live_tyler:
+            code = selections.get("jurisdiction_code")
+            if code:
+                return await filing_repo.get_workflows_for_jurisdiction(code)
         return []
     if phase == FilingPhase.SELECTING_CASE_PARTIES:
         if service:
@@ -535,6 +590,8 @@ async def load_db_options(
         return [case] if case else []
     if phase == FilingPhase.VERIFYING_COURT_PAYMENT:
         return list(selections.get("court_payment_accounts") or [])
+    if phase == FilingPhase.SELECTING_BRAINTREE_CARD:
+        return list(selections.get("platform_payment_cards") or [])
     if phase == FilingPhase.CONFIRMING_EFILE:
         return []
     if phase in (FilingPhase.EXISTING_SEARCH_PARTY, FilingPhase.EXISTING_SEARCH_DATE):
@@ -873,6 +930,11 @@ def _phase_after_case_confirm(sel: Dict[str, Any]) -> "FilingPhase":
 
 
 def advance_phase_after_selections(session: FilingSession) -> None:
+    from app.agents.conversation.orchestration.flow_redirects import (
+        clear_fresh_catalog_on_selection,
+    )
+
+    clear_fresh_catalog_on_selection(session)
     sel = session.selections
     if session.phase == FilingPhase.SELECTING_STATE and sel.get("state_code"):
         session.phase = FilingPhase.INTENT_PENDING
@@ -962,6 +1024,19 @@ def advance_phase_after_selections(session: FilingSession) -> None:
             session.phase = FilingPhase.OFFERING_DOCUMENTS
 
 
+def _is_placeholder_filer_option(row: Dict[str, Any]) -> bool:
+    name = str(row.get("name") or "").strip().lower()
+    code = str(row.get("code") or "").strip().lower()
+    placeholders = {
+        "not applicable",
+        "n/a",
+        "na",
+        "none",
+        "not_applicable",
+    }
+    return name in placeholders or code in placeholders
+
+
 def auto_pick_single_option(
     session: FilingSession, phase: FilingPhase, options: List[Dict[str, Any]]
 ) -> bool:
@@ -977,6 +1052,9 @@ def auto_pick_single_option(
     row = options[0] if isinstance(options[0], dict) else {}
     code = str(row.get("code") or "").strip()
     if not code:
+        return False
+
+    if phase == FilingPhase.SELECTING_FILER_TYPE and _is_placeholder_filer_option(row):
         return False
 
     if phase == FilingPhase.SELECTING_FILER_TYPE:
@@ -1221,6 +1299,91 @@ def result_from_session(
         metadata=meta,
         analysis=analysis,
     )
+
+
+_STRICT_INTAKE_LATE_PHASES = frozenset(
+    {
+        FilingPhase.OFFERING_DOCUMENTS,
+        FilingPhase.AWAITING_DOCUMENT_UPLOAD,
+        FilingPhase.COLLECTING_WORKFLOW_ANSWERS,
+        FilingPhase.CONFIRMING_WORKFLOW_ANSWERS,
+        FilingPhase.GENERATING_DOCUMENTS,
+        FilingPhase.COMPLETE,
+    }
+)
+
+def strict_dropdown_intake(session: FilingSession) -> bool:
+    """New-case path before template questions: dropdown codes only, no intake LLM."""
+    from app.config.settings import get_settings
+
+    if not get_settings().FILING_STRICT_DROPDOWN_INTAKE:
+        return False
+    if session.selections.get("template_questions_ready"):
+        return False
+    if session.mode in (FilingMode.FILING_EXISTING, FilingMode.GENERIC):
+        return False
+    if session.phase in _STRICT_INTAKE_LATE_PHASES:
+        return False
+    if session.mode == FilingMode.FILING_NEW:
+        return True
+    if session.mode != FilingMode.UNSET:
+        return False
+    return session.phase in (
+        FilingPhase.GREETING,
+        FilingPhase.SELECTING_STATE,
+        FilingPhase.INTENT_PENDING,
+        FilingPhase.SELECTING_COUNTY,
+        FilingPhase.SELECTING_JURISDICTION,
+        FilingPhase.SELECTING_CASE_CATEGORY,
+        FilingPhase.SELECTING_CASE_TYPE,
+        FilingPhase.SELECTING_CASE_PARTIES,
+        FilingPhase.SELECTING_FILER_TYPE,
+        FilingPhase.SELECTING_FILING_CODE,
+        FilingPhase.SELECTING_DOC_TYPE_CODE,
+        FilingPhase.SELECTING_DOCUMENT_TYPE,
+        FilingPhase.SELECTING_FILING_TYPE,
+    )
+
+
+NavigationIntentKind = Literal[
+    "filing_new", "filing_existing", "generic_legal", "check_status"
+]
+
+
+def classify_navigation_intent_from_text(
+    user_message: str,
+) -> Optional[NavigationIntentKind]:
+    """Match exact dropdown labels/codes at intent_pending (free text uses LLM)."""
+    from app.services.navigation_intent_service import (
+        match_navigation_intent_from_exact_text,
+    )
+
+    return match_navigation_intent_from_exact_text(user_message)
+
+
+def stash_case_topic_from_message(session: FilingSession, message: str) -> None:
+    """Capture divorce/custody/etc. topic from intake text when LLM intent is off."""
+    topic = infer_case_topic(message)
+    if not topic or len(topic) < 3:
+        return
+    topic_key = normalize_catalog_text(topic)
+    blocked = frozenset({"case", "status", "new", "existing", "file", "court"})
+    if topic_key in blocked:
+        return
+    prior = str(session.selections.get("case_topic") or "")
+    if topic != prior:
+        session.selections.pop("matched_court_codes", None)
+        session.selections.pop("matched_case_type_codes", None)
+    session.selections["case_topic"] = topic
+
+
+def try_strict_intent_selection(session: FilingSession, user_message: str) -> bool:
+    code = classify_navigation_intent_from_text(user_message)
+    if code not in {"filing_new", "filing_existing"}:
+        return False
+    advance_mode_from_intent(session, code)
+    stash_case_topic_from_message(session, user_message)
+    return True
 
 
 def get_session(conversation_id: str, user_id: str) -> FilingSession:

@@ -83,7 +83,19 @@ async def test_preview_does_not_submit():
     result_state = await _show_efile_preview(ctx, state, session)
     assert ctx.efile_service.submit_calls == 0
     assert session.phase == FilingPhase.CONFIRMING_EFILE
-    assert "This is the e-file request JSON" in result_state["result"].assistant_message
+    assert "Review the e-file request below" in result_state["result"].assistant_message
+
+
+@pytest.mark.asyncio
+async def test_proceed_with_efiling_submits_preview_payload():
+    ctx = _Ctx()
+    session = _session()
+    session.phase = FilingPhase.CONFIRMING_EFILE
+    session.selections["efile_payload_preview"] = ctx.efile_service.preview
+    state = {"conversation_id": "conv-1", "user_id": "user-1"}
+    await _handle_efile_confirm(ctx, state, session, "proceed with efiling")
+    assert ctx.efile_service.submit_calls == 1
+    assert session.phase == FilingPhase.COMPLETE
 
 
 @pytest.mark.asyncio

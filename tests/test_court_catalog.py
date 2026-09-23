@@ -77,6 +77,17 @@ SAMPLE_JURISDICTION_DATA = {
                 }
             ],
         },
+        {
+            "code": "bexar:dc",
+            "name": "Bexar County - District Clerk",
+            "categories": [
+                {
+                    "code": "cr1",
+                    "name": "Criminal",
+                    "case_types": [{"code": "mis1", "name": "Misdemeanor"}],
+                }
+            ],
+        },
     ],
 }
 
@@ -115,7 +126,7 @@ def test_infer_case_topic_from_natural_language():
     assert infer_case_topic("I need to file a case for divorce") == "divorce"
 
 
-def test_topic_dropdown_message():
+def test_jurisdiction_dropdown_message_ignores_case_topic():
     msg = build_phase_selection_message(
         "selecting_jurisdiction",
         {"case_topic": "divorce"},
@@ -125,12 +136,12 @@ def test_topic_dropdown_message():
         ],
     )
     assert msg is not None
-    assert "divorce" in msg.lower()
+    assert "divorce" not in msg.lower()
     assert "dropdown" in msg.lower()
 
 
 @pytest.mark.asyncio
-async def test_new_case_jurisdiction_options_filter_by_topic(monkeypatch):
+async def test_new_case_jurisdiction_options_include_all_courts(monkeypatch):
     catalog = CourtCatalogService(fallback_path=Path("missing-catalog.json"))
     catalog._cache["TX"] = flatten_jurisdiction_data(SAMPLE_JURISDICTION_DATA)
     reset_court_catalog(catalog)
@@ -146,7 +157,11 @@ async def test_new_case_jurisdiction_options_filter_by_topic(monkeypatch):
         mode=FilingMode.FILING_NEW,
         bedrock=None,
     )
-    assert {row["code"] for row in options} == {"harris:dc", "travis:dc"}
+    assert {row["code"] for row in options} == {
+        "harris:dc",
+        "travis:dc",
+        "bexar:dc",
+    }
     repo.get_jurisdictions_for_county.assert_not_called()
     reset_court_catalog()
 
@@ -263,7 +278,11 @@ async def test_category_options_skip_llm_after_court_selected(monkeypatch):
 def test_jurisdiction_options_are_unique():
     rows = flatten_jurisdiction_data(SAMPLE_JURISDICTION_DATA)
     options = jurisdiction_options(rows)
-    assert [row["code"] for row in options] == ["harris:dc", "travis:dc"]
+    assert [row["code"] for row in options] == [
+        "harris:dc",
+        "travis:dc",
+        "bexar:dc",
+    ]
 
 
 @pytest.mark.asyncio

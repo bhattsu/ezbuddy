@@ -124,18 +124,18 @@ class Settings(BaseSettings):
         description="Document analysis API URL",
     )
     CHATBOT_WS_ENABLED: bool = Field(default=True)
-    # Filing intake defaults (not overridable via .env — change here if needed).
     FILING_STRICT_DROPDOWN_INTAKE: bool = Field(
         default=True,
         description=(
             "Until form questions are extracted: new-case intake uses dropdown codes only — "
-            "no navigation/court-match/case-intent LLM on the RDS catalog."
+            "no navigation/court-match/case-intent LLM and no catalog batches sent to Bedrock."
         ),
     )
     FILING_USE_LIVE_TYLER_CODES: bool = Field(
         default=True,
         description=(
-            "Load Tyler dropdowns from live /v2/{state}/code/* API link cascade instead of "
+            "Load jurisdiction, case category, case type, party, filer, filing code, and "
+            "related Tyler dropdowns from live /v2/{state}/code/* API links instead of "
             "integration.jurisdiction_api_data (RDS court catalog)."
         ),
     )
@@ -159,6 +159,7 @@ class Settings(BaseSettings):
     USLEGALPRO_FIND_CUSTOMER_PATH: str = Field(default="/payment/find_customer")
     USLEGALPRO_CREATE_CUSTOMER_PATH: str = Field(default="/payment/create_customer")
     USLEGALPRO_CREDIT_CARDS_PATH: str = Field(default="/payment/credit_cards")
+    USLEGALPRO_AUTHORIZE_PATH: str = Field(default="/payment/authorize")
     USLEGALPRO_API_TIMEOUT_SECONDS: float = Field(default=30.0)
     USLEGALPRO_DOC_GEN_TIMEOUT_SECONDS: float = Field(
         default=180.0,

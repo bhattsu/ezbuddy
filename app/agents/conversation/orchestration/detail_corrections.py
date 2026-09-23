@@ -5,8 +5,18 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from app.adapters.llm.bedrock import Bedrock
 from app.agents.conversation.orchestration.state import FilingSession
-from app.services.document_template_match import apply_known_case_answers
+from app.services.document_template_match import (
+    apply_known_case_answers,
+    filing_user_party_side,
+    is_full_person_name_field,
+    party_side_for_field,
+)
+from app.services.workflow_field_correction_service import (
+    _normalize_correction_message,
+    apply_llm_field_correction,
+)
 
 _CORRECTION_CUE_RE = re.compile(
     r"\b(change|update|correct|edit|rename|replace|instead|actually|make it)\b",
@@ -31,7 +41,6 @@ _SELECTION_KEYS = (
     "document_type_name",
     "doc_type",
 )
-_NAME_TOKENS = ("name", "full_name", "first_name", "last_name", "petitioner", "respondent")
 _FIELD_ALIASES: Dict[str, tuple[str, ...]] = {
     "license number": ("license", "licence", "dl", "driver", "id_number"),
     "license": ("license", "licence", "dl", "driver"),
@@ -42,7 +51,7 @@ _FIELD_ALIASES: Dict[str, tuple[str, ...]] = {
 
 
 def looks_like_detail_correction(text: str) -> bool:
-    raw = str(text or "").strip()
+    raw = _normalize_correction_message(text)
     if not raw or raw.startswith("["):
         return False
     if _NO_CHILDREN_RE.search(raw) or _WITH_CHILDREN_RE.search(raw):
@@ -50,11 +59,28 @@ def looks_like_detail_correction(text: str) -> bool:
     return bool(_CORRECTION_CUE_RE.search(raw) and _CHANGE_TO_RE.search(raw))
 
 
-def apply_chat_detail_corrections(session: FilingSession, user_message: str) -> List[str]:
+async def apply_chat_detail_corrections(
+    session: FilingSession,
+    user_message: str,
+    *,
+    bedrock: Optional[Bedrock] = None,
+) -> List[str]:
     """Update answers/selections from a correction message. Returns changed field names."""
-    raw = str(user_message or "").strip()
+    raw = _normalize_correction_message(user_message)
     if not raw or raw.startswith("["):
         return []
+
+    if bedrock is not None and (
+        looks_like_detail_correction(raw)
+        or _CORRECTION_CUE_RE.search(raw)
+    ):
+        llm_changed = await apply_llm_field_correction(
+            session, raw, bedrock=bedrock
+        )
+        if llm_changed:
+            _refresh_known_case_skips(session)
+            return llm_changed
+
     changed: List[str] = []
     changed.extend(_apply_children_correction(session, raw))
     changed.extend(_apply_change_to_value(session, raw))
@@ -116,7 +142,7 @@ def _apply_change_to_value(session: FilingSession, raw: str) -> List[str]:
         return []
     targets = _match_answer_fields(session, field_hint)
     changed: List[str] = []
-    for name in targets:
+    for name in targets[:1]:
         session.collected_answers[name] = _value_for_field(name, value, session)
         changed.append(name)
     return changed
@@ -127,12 +153,62 @@ def _match_answer_fields(session: FilingSession, field_hint: str) -> List[str]:
     if not hint:
         return []
     hint_tokens = set(hint.split())
+
+    side_hint = ""
+    if re.search(r"\b(defendant|respondent)\b", hint):
+        side_hint = "defendant"
+    elif re.search(r"\b(plaintiff|petitioner)\b", hint):
+        side_hint = "plaintiff"
+    elif re.search(r"\b(my name|me name)\b", hint) or (
+        "my" in hint_tokens and "name" in hint_tokens
+    ) or ("me" in hint_tokens and "name" in hint_tokens):
+        side_hint = filing_user_party_side(session.selections)
+
+    if side_hint and (
+        "name" in hint_tokens
+        or "me" in hint_tokens
+        or hint in {"name", "the name"}
+        or re.search(r"\b(my name|me name)\b", hint)
+    ):
+        matches = []
+        for question in session.workflow_questions:
+            name = str(question.get("field_name") or "").strip()
+            if not name:
+                continue
+            label = str(question.get("field_label") or question.get("question") or "")
+            if not is_full_person_name_field(name, label):
+                continue
+            if party_side_for_field(name, label) == side_hint:
+                matches.append(name)
+        if matches:
+            matches.sort(key=lambda n: (0 if n.upper().endswith("_FULL_NAME") else 1, n))
+            return [matches[0]]
+
+    if hint in {"name", "the name"} or hint_tokens <= {"name"}:
+        side_hint = filing_user_party_side(session.selections)
+        matches = []
+        for question in session.workflow_questions:
+            name = str(question.get("field_name") or "").strip()
+            if not name:
+                continue
+            label = str(question.get("field_label") or question.get("question") or "")
+            if not is_full_person_name_field(name, label):
+                continue
+            if party_side_for_field(name, label) == side_hint:
+                matches.append(name)
+        if matches:
+            matches.sort(key=lambda n: (0 if n.upper().endswith("_FULL_NAME") else 1, n))
+            return [matches[0]]
+
     scored: List[tuple[int, str]] = []
     for question in session.workflow_questions:
         name = str(question.get("field_name") or "").strip()
         if not name:
             continue
         label = str(question.get("field_label") or name)
+        if side_hint and is_full_person_name_field(name, label):
+            if party_side_for_field(name, label) != side_hint:
+                continue
         blob = re.sub(r"[^a-z0-9]+", " ", f"{name} {label}".lower())
         tokens = set(blob.split())
         overlap = len(hint_tokens & tokens)
@@ -144,7 +220,7 @@ def _match_answer_fields(session: FilingSession, field_hint: str) -> List[str]:
     if scored:
         scored.sort(key=lambda item: (-item[0], item[1]))
         best = scored[0][0]
-        return [name for score, name in scored if score == best]
+        return [name for score, name in scored if score == best][:1]
     hint_norm = re.sub(r"\s+", " ", hint).strip()
     for alias_key, tokens in _FIELD_ALIASES.items():
         if alias_key in hint_norm or hint_norm in alias_key:
@@ -159,20 +235,13 @@ def _match_answer_fields(session: FilingSession, field_hint: str) -> List[str]:
                     alias_scored.append((2, name))
             if alias_scored:
                 return [alias_scored[0][1]]
-    if any(token in _NAME_TOKENS for token in hint_tokens) or hint in {"name", "the name"}:
-        names = [
-            str(q.get("field_name") or "")
-            for q in session.workflow_questions
-            if "name" in str(q.get("field_name") or "").lower()
-            or "name" in str(q.get("field_label") or "").lower()
-        ]
-        answered = [name for name in names if session.collected_answers.get(name) not in (None, "", [], {})]
-        return answered or [name for name in names if name]
     return []
 
 
 def _value_for_field(field_name: str, value: str, session: FilingSession) -> str:
     stem = field_name.lower()
+    if stem.endswith("_full_name") or "full_name" in stem:
+        return value
     if "last_name" in stem and " " in value:
         return value.split()[-1]
     if "first_name" in stem and " " in value:

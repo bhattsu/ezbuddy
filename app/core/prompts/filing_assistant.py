@@ -13,6 +13,29 @@ POST_STATE_HELP_MESSAGE = (
     "check the case status, or answer a general legal question."
 )
 
+NAVIGATION_INTENT_CLASSIFICATION_PROMPT = """Classify what the user wants after they chose a US state for court filing.
+
+## User message
+{user_message}
+
+Return JSON only:
+{{
+  "intent": "filing_new | filing_existing | generic_legal | check_status | unclear"
+}}
+
+Definitions:
+- filing_new: they want to start or file a new court case (including natural phrasing like "I need a divorce", "file for custody", "start a lawsuit").
+- filing_existing: they want to find an existing court case to add documents or look it up for further filing.
+- check_status: they want the status of a prior e-filing submission or envelope (not locating an existing docket case).
+- generic_legal: a substantive legal question (law, rights, deadlines, requirements) without asking to start filing now.
+- unclear: wizard or UI help ("how do I", "what should I select", "help me", "select it"), gibberish, or ambiguous.
+
+Rules:
+- Prefer filing_new when they clearly want to begin a filing, even with informal wording.
+- Prefer unclear when they ask how to use the tool or what to pick on screen, not when they state a filing goal.
+- Do not invent facts. English only.
+"""
+
 FILING_ASSISTANT_PROMPT = """You are a professional US Legal Pro filing assistant for court document preparation.
 
 Your job is to help users file court documents or answer brief generic legal questions.

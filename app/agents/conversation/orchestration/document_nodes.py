@@ -19,6 +19,10 @@ from app.agents.conversation.orchestration.helpers import (
     result_from_session,
     workflow_is_complete,
 )
+from app.agents.conversation.orchestration.workflow_review import (
+    begin_workflow_review,
+    format_workflow_review_message,
+)
 from app.agents.conversation.orchestration.prefill import map_analyses_to_answers
 from app.agents.conversation.orchestration.session_manager import FilingSessionManager
 from app.agents.conversation.orchestration.state import (
@@ -155,7 +159,8 @@ def _documents_ready_message(
 def _begin_workflow(session: FilingSession) -> str:
     session.phase = FilingPhase.COLLECTING_WORKFLOW_ANSWERS
     if workflow_is_complete(session) or not session.workflow_questions:
-        return "generate_documents"
+        begin_workflow_review(session)
+        return "workflow_review"
     return "workflow"
 
 
@@ -172,16 +177,19 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
 
         if intent in ("no", "done"):
             next_node = _begin_workflow(session)
-            if next_node == "generate_documents":
-                session.phase = FilingPhase.GENERATING_DOCUMENTS
-                await ctx.notify("generating_documents")
+            if next_node == "workflow_review":
+                await ctx.notify("confirming_workflow_answers")
+                result = result_from_session(
+                    session,
+                    format_workflow_review_message(session),
+                    event_kind="workflow.review",
+                )
                 await persist_system_state(ctx.conversation_repo, session)
                 return {
                     **state,
                     "phase": session.phase.value,
-                    "user_message": WORKFLOW_INTRO_USER_MESSAGE,
-                    "skip_user_persist": True,
-                    "next_node": "generate_documents",
+                    "result": result,
+                    "next_node": "persist",
                 }
             await ctx.notify("collecting_workflow_answers")
             await persist_system_state(ctx.conversation_repo, session)
@@ -313,12 +321,19 @@ def build_document_nodes(ctx: FilingOrchestratorContext) -> Dict[str, NodeFn]:
             )
 
         if workflow_is_complete(session) or not session.workflow_questions:
-            session.phase = FilingPhase.GENERATING_DOCUMENTS
+            begin_workflow_review(session)
+            await ctx.notify("confirming_workflow_answers")
+            result = result_from_session(
+                session,
+                format_workflow_review_message(session),
+                event_kind="workflow.review",
+            )
             await persist_system_state(ctx.conversation_repo, session)
             return {
                 **state,
                 "phase": session.phase.value,
-                "next_node": "generate_documents",
+                "result": result,
+                "next_node": "persist",
             }
 
         if session.selections.get("template_questions_ready"):
